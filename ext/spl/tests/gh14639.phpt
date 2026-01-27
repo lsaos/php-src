@@ -7,9 +7,6 @@ memory_limit=2M
 if (getenv("USE_ZEND_ALLOC") === "0") {
     die("skip Zend MM disabled");
 }
-if (getenv("GITHUB_ACTIONS") && substr(PHP_OS, 0, 3) == "WIN") {
-    die("skip Segfaults in GitHub actions on Windows");
-}
 ?>
 --FILE--
 <?php

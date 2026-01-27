@@ -26,7 +26,7 @@ int fpm_scoreboard_init_main(void)
 	struct fpm_worker_pool_s *wp;
 
 #ifdef HAVE_TIMES
-#if (defined(HAVE_SYSCONF) && defined(_SC_CLK_TCK))
+#ifdef _SC_CLK_TCK
 	fpm_scoreboard_tick = sysconf(_SC_CLK_TCK);
 #else /* _SC_CLK_TCK */
 #ifdef HZ
@@ -141,7 +141,7 @@ void fpm_scoreboard_update_begin(struct fpm_scoreboard_s *scoreboard) /* {{{ */
 
 void fpm_scoreboard_update_commit(
 		int idle, int active, int lq, int lq_len, int requests, int max_children_reached,
-		int slow_rq, int action, struct fpm_scoreboard_s *scoreboard) /* {{{ */
+		int slow_rq, size_t memory_peak, int action, struct fpm_scoreboard_s *scoreboard) /* {{{ */
 {
 	scoreboard = fpm_scoreboard_get_for_update(scoreboard);
 	if (!scoreboard) {
@@ -211,6 +211,9 @@ void fpm_scoreboard_update_commit(
 	if (scoreboard->active > scoreboard->active_max) {
 		scoreboard->active_max = scoreboard->active;
 	}
+	if (scoreboard->memory_peak < memory_peak) {
+		scoreboard->memory_peak = memory_peak;
+	}
 
 	fpm_unlock(scoreboard->writer_active);
 #ifdef PHP_FPM_ZLOG_TRACE
@@ -222,11 +225,11 @@ void fpm_scoreboard_update_commit(
 
 void fpm_scoreboard_update(
 		int idle, int active, int lq, int lq_len, int requests, int max_children_reached,
-		int slow_rq, int action, struct fpm_scoreboard_s *scoreboard) /* {{{ */
+		int slow_rq, size_t memory_peak, int action, struct fpm_scoreboard_s *scoreboard) /* {{{ */
 {
 	fpm_scoreboard_update_begin(scoreboard);
 	fpm_scoreboard_update_commit(
-			idle, active, lq, lq_len, requests, max_children_reached, slow_rq, action, scoreboard);
+			idle, active, lq, lq_len, requests, max_children_reached, slow_rq, memory_peak, action, scoreboard);
 }
 /* }}} */
 

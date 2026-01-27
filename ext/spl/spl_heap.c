@@ -19,23 +19,21 @@
 #endif
 
 #include "php.h"
+#include "zend_interfaces.h"
 #include "zend_exceptions.h"
 
-#include "php_spl.h"
-#include "spl_functions.h"
-#include "spl_engine.h"
-#include "spl_iterators.h"
 #include "spl_heap.h"
 #include "spl_heap_arginfo.h"
 #include "spl_exceptions.h"
+#include "spl_functions.h" /* For spl_set_private_debug_info_property() */
 
 #define PTR_HEAP_BLOCK_SIZE 64
 
 #define SPL_HEAP_CORRUPTED       0x00000001
 #define SPL_HEAP_WRITE_LOCKED    0x00000002
 
-zend_object_handlers spl_handler_SplHeap;
-zend_object_handlers spl_handler_SplPriorityQueue;
+static zend_object_handlers spl_handler_SplHeap;
+static zend_object_handlers spl_handler_SplPriorityQueue;
 
 PHPAPI zend_class_entry  *spl_ce_SplHeap;
 PHPAPI zend_class_entry  *spl_ce_SplMaxHeap;
@@ -518,33 +516,25 @@ static zend_result spl_heap_object_count_elements(zend_object *object, zend_long
 }
 /* }}} */
 
-static HashTable* spl_heap_object_get_debug_info(zend_class_entry *ce, zend_object *obj) { /* {{{ */
+static HashTable* spl_heap_object_get_debug_info(const zend_class_entry *ce, zend_object *obj) { /* {{{ */
 	spl_heap_object *intern = spl_heap_from_obj(obj);
 	zval tmp, heap_array;
-	zend_string *pnstr;
 	HashTable *debug_info;
-	int  i;
+	HashTable *properties = zend_std_get_properties_ex(&intern->std);
 
-	if (!intern->std.properties) {
-		rebuild_object_properties(&intern->std);
-	}
+	/* +3 As we are adding 3 additional key-entries */
+	debug_info = zend_new_array(zend_hash_num_elements(properties) + 3);
+	zend_hash_copy(debug_info, properties, (copy_ctor_func_t) zval_add_ref);
 
-	debug_info = zend_new_array(zend_hash_num_elements(intern->std.properties) + 1);
-	zend_hash_copy(debug_info, intern->std.properties, (copy_ctor_func_t) zval_add_ref);
-
-	pnstr = spl_gen_private_prop_name(ce, "flags", sizeof("flags")-1);
 	ZVAL_LONG(&tmp, intern->flags);
-	zend_hash_update(debug_info, pnstr, &tmp);
-	zend_string_release_ex(pnstr, 0);
+	spl_set_private_debug_info_property(ce, "flags", strlen("flags"), debug_info, &tmp);
 
-	pnstr = spl_gen_private_prop_name(ce, "isCorrupted", sizeof("isCorrupted")-1);
 	ZVAL_BOOL(&tmp, intern->heap->flags&SPL_HEAP_CORRUPTED);
-	zend_hash_update(debug_info, pnstr, &tmp);
-	zend_string_release_ex(pnstr, 0);
+	spl_set_private_debug_info_property(ce, "isCorrupted", strlen("isCorrupted"), debug_info, &tmp);
 
 	array_init(&heap_array);
 
-	for (i = 0; i < intern->heap->count; ++i) {
+	for (zend_ulong i = 0; i < intern->heap->count; ++i) {
 		if (ce == spl_ce_SplPriorityQueue) {
 			spl_pqueue_elem *pq_elem = spl_heap_elem(intern->heap, i);
 			zval elem;
@@ -557,9 +547,7 @@ static HashTable* spl_heap_object_get_debug_info(zend_class_entry *ce, zend_obje
 		}
 	}
 
-	pnstr = spl_gen_private_prop_name(ce, "heap", sizeof("heap")-1);
-	zend_hash_update(debug_info, pnstr, &heap_array);
-	zend_string_release_ex(pnstr, 0);
+	spl_set_private_debug_info_property(ce, "heap", strlen("heap"), debug_info, &heap_array);
 
 	return debug_info;
 }
@@ -918,7 +906,7 @@ static void spl_heap_it_rewind(zend_object_iterator *iter) /* {{{ */
 }
 /* }}} */
 
-static int spl_heap_it_valid(zend_object_iterator *iter) /* {{{ */
+static zend_result spl_heap_it_valid(zend_object_iterator *iter) /* {{{ */
 {
 	return ((Z_SPLHEAP_P(&iter->data))->heap->count != 0 ? SUCCESS : FAILURE);
 }

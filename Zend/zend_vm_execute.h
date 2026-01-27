@@ -338,6 +338,9 @@ static const void *zend_vm_get_opcode_handler_func(uint8_t opcode, const zend_op
 #ifndef VM_TRACE
 # define VM_TRACE(op)
 #endif
+#ifndef VM_TRACE_OP_END
+# define VM_TRACE_OP_END(op)
+#endif
 #ifndef VM_TRACE_START
 # define VM_TRACE_START()
 #endif
@@ -345,7 +348,16 @@ static const void *zend_vm_get_opcode_handler_func(uint8_t opcode, const zend_op
 # define VM_TRACE_END()
 #endif
 #if (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID)
-#define HYBRID_NEXT()     goto *(void**)(OPLINE->handler)
+# if defined(__GNUC__) && defined(__i386__)
+#  define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "ebx")
+# elif defined(__GNUC__) && defined(__x86_64__)
+#  define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "rbx","r12","r13")
+# elif defined(__GNUC__) && defined(__aarch64__)
+#  define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "x19","x20","x21","x22","x23","x24","x25","x26")
+# else
+#  define HYBRID_JIT_GUARD()
+# endif
+#define HYBRID_NEXT()     HYBRID_JIT_GUARD(); goto *(void**)(OPLINE->handler)
 #define HYBRID_SWITCH()   HYBRID_NEXT();
 #define HYBRID_CASE(op)   op ## _LABEL
 #define HYBRID_BREAK()    HYBRID_NEXT()
@@ -782,7 +794,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_STATIC_PROP_OP_SPEC_HAN
 			}
 		}
 
-		if (UNEXPECTED(ZEND_TYPE_IS_SET(prop_info->type))) {
+		if (ZEND_TYPE_IS_SET(prop_info->type)) {
 			/* special case for typed properties */
 			zend_binary_assign_op_typed_prop(prop_info, prop, value OPLINE_CC EXECUTE_DATA_CC);
 		} else {
@@ -939,7 +951,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DAT
 
 	value = RT_CONSTANT((opline+1), (opline+1)->op1);
 
-	if (UNEXPECTED(ZEND_TYPE_IS_SET(prop_info->type))) {
+	if (ZEND_TYPE_IS_SET(prop_info->type)) {
 		value = zend_assign_to_typed_prop(prop_info, prop, value, &garbage EXECUTE_DATA_CC);
 
 	} else {
@@ -975,7 +987,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DAT
 
 	value = _get_zval_ptr_tmp((opline+1)->op1.var EXECUTE_DATA_CC);
 
-	if (UNEXPECTED(ZEND_TYPE_IS_SET(prop_info->type))) {
+	if (ZEND_TYPE_IS_SET(prop_info->type)) {
 		value = zend_assign_to_typed_prop(prop_info, prop, value, &garbage EXECUTE_DATA_CC);
 		zval_ptr_dtor_nogc(EX_VAR((opline+1)->op1.var));
 	} else {
@@ -1011,7 +1023,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DAT
 
 	value = _get_zval_ptr_var((opline+1)->op1.var EXECUTE_DATA_CC);
 
-	if (UNEXPECTED(ZEND_TYPE_IS_SET(prop_info->type))) {
+	if (ZEND_TYPE_IS_SET(prop_info->type)) {
 		value = zend_assign_to_typed_prop(prop_info, prop, value, &garbage EXECUTE_DATA_CC);
 		zval_ptr_dtor_nogc(EX_VAR((opline+1)->op1.var));
 	} else {
@@ -1047,7 +1059,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DAT
 
 	value = _get_zval_ptr_cv_BP_VAR_R((opline+1)->op1.var EXECUTE_DATA_CC);
 
-	if (UNEXPECTED(ZEND_TYPE_IS_SET(prop_info->type))) {
+	if (ZEND_TYPE_IS_SET(prop_info->type)) {
 		value = zend_assign_to_typed_prop(prop_info, prop, value, &garbage EXECUTE_DATA_CC);
 
 	} else {
@@ -1087,7 +1099,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_STATIC_PROP_REF_SPEC_HA
 		if (UNEXPECTED(!zend_wrong_assign_to_variable_reference(prop, value_ptr, &garbage OPLINE_CC EXECUTE_DATA_CC))) {
 			prop = &EG(uninitialized_zval);
 		}
-	} else if (UNEXPECTED(ZEND_TYPE_IS_SET(prop_info->type))) {
+	} else if (ZEND_TYPE_IS_SET(prop_info->type)) {
 		prop = zend_assign_to_typed_property_reference(prop_info, prop, value_ptr, &garbage EXECUTE_DATA_CC);
 	} else {
 		zend_assign_to_variable_reference(prop, value_ptr, &garbage);
@@ -1287,6 +1299,8 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_ICALL_SPEC_RETV
 	}
 #endif
 
+	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
+
 	EG(current_execute_data) = execute_data;
 	zend_vm_stack_free_args(call);
 
@@ -1309,7 +1323,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_ICALL_SPEC_RETV
 		HANDLE_EXCEPTION();
 	}
 
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -1349,6 +1363,8 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_ICALL_SPEC_RETV
 	}
 #endif
 
+	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
+
 	EG(current_execute_data) = execute_data;
 	zend_vm_stack_free_args(call);
 
@@ -1371,7 +1387,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_ICALL_SPEC_RETV
 		HANDLE_EXCEPTION();
 	}
 
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -1396,7 +1412,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_ICALL_SPEC_OBS
 	ret = RETURN_VALUE_USED(opline) ? EX_VAR(opline->result.var) : &retval;
 	ZVAL_NULL(ret);
 
-	zend_observer_fcall_begin(call);
+	zend_observer_fcall_begin_specialized(call, false);
 	fbc->internal_function.handler(call, ret);
 
 #if ZEND_DEBUG
@@ -1412,6 +1428,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_ICALL_SPEC_OBS
 	}
 #endif
 	zend_observer_fcall_end(call, EG(exception) ? NULL : ret);
+	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
 	zend_vm_stack_free_args(call);
@@ -1435,7 +1452,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_ICALL_SPEC_OBS
 		HANDLE_EXCEPTION();
 	}
 
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -1507,7 +1524,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_UCALL_SPEC_OBS
 	i_init_func_execute_data(&fbc->op_array, ret, 0 EXECUTE_DATA_CC);
 	LOAD_OPLINE_EX();
 	SAVE_OPLINE();
-	zend_observer_fcall_begin(execute_data);
+	zend_observer_fcall_begin_specialized(execute_data, false);
 
 	ZEND_VM_ENTER_EX();
 }
@@ -1518,9 +1535,22 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_S
 	zend_execute_data *call = EX(call);
 	zend_function *fbc = call->func;
 	zval *ret;
+	zval retval;
 
 	SAVE_OPLINE();
 	EX(call) = call->prev_execute_data;
+
+	if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
+		zend_deprecated_function(fbc);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			UNDEF_RESULT();
+			if (!0) {
+				ret = &retval;
+				ZVAL_UNDEF(ret);
+			}
+			goto fcall_by_name_end;
+		}
+	}
 
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION)) {
 		ret = NULL;
@@ -1536,22 +1566,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_S
 
 		ZEND_VM_ENTER_EX();
 	} else {
-		zval retval;
 		ZEND_ASSERT(fbc->type == ZEND_INTERNAL_FUNCTION);
 		if (0) {
 			ret = NULL;
-		}
-
-		if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
-			zend_deprecated_function(fbc);
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				UNDEF_RESULT();
-				if (!0) {
-					ret = &retval;
-					ZVAL_UNDEF(ret);
-				}
-				goto fcall_by_name_end;
-			}
 		}
 
 		call->prev_execute_data = execute_data;
@@ -1579,9 +1596,16 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_S
 		}
 #endif
 
+		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
+
 		EG(current_execute_data) = execute_data;
 
+		goto fcall_by_name_end;
+	}
+
+	if (0) {
 fcall_by_name_end:
+
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1603,7 +1627,7 @@ fcall_by_name_end:
 		zend_rethrow_exception(execute_data);
 		HANDLE_EXCEPTION();
 	}
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -1613,9 +1637,22 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_S
 	zend_execute_data *call = EX(call);
 	zend_function *fbc = call->func;
 	zval *ret;
+	zval retval;
 
 	SAVE_OPLINE();
 	EX(call) = call->prev_execute_data;
+
+	if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
+		zend_deprecated_function(fbc);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			UNDEF_RESULT();
+			if (!1) {
+				ret = &retval;
+				ZVAL_UNDEF(ret);
+			}
+			goto fcall_by_name_end;
+		}
+	}
 
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION)) {
 		ret = NULL;
@@ -1631,22 +1668,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_S
 
 		ZEND_VM_ENTER_EX();
 	} else {
-		zval retval;
 		ZEND_ASSERT(fbc->type == ZEND_INTERNAL_FUNCTION);
 		if (0) {
 			ret = NULL;
-		}
-
-		if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
-			zend_deprecated_function(fbc);
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				UNDEF_RESULT();
-				if (!1) {
-					ret = &retval;
-					ZVAL_UNDEF(ret);
-				}
-				goto fcall_by_name_end;
-			}
 		}
 
 		call->prev_execute_data = execute_data;
@@ -1674,9 +1698,16 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_S
 		}
 #endif
 
+		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
+
 		EG(current_execute_data) = execute_data;
 
+		goto fcall_by_name_end;
+	}
+
+	if (0) {
 fcall_by_name_end:
+
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1698,7 +1729,7 @@ fcall_by_name_end:
 		zend_rethrow_exception(execute_data);
 		HANDLE_EXCEPTION();
 	}
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -1708,9 +1739,22 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_
 	zend_execute_data *call = EX(call);
 	zend_function *fbc = call->func;
 	zval *ret;
+	zval retval;
 
 	SAVE_OPLINE();
 	EX(call) = call->prev_execute_data;
+
+	if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
+		zend_deprecated_function(fbc);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			UNDEF_RESULT();
+			if (!RETURN_VALUE_USED(opline)) {
+				ret = &retval;
+				ZVAL_UNDEF(ret);
+			}
+			goto fcall_by_name_end;
+		}
+	}
 
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION)) {
 		ret = NULL;
@@ -1723,26 +1767,13 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_
 		i_init_func_execute_data(&fbc->op_array, ret, 0 EXECUTE_DATA_CC);
 		LOAD_OPLINE_EX();
 		SAVE_OPLINE();
-		zend_observer_fcall_begin(execute_data);
+		zend_observer_fcall_begin_specialized(execute_data, false);
 
 		ZEND_VM_ENTER_EX();
 	} else {
-		zval retval;
 		ZEND_ASSERT(fbc->type == ZEND_INTERNAL_FUNCTION);
 		if (1) {
 			ret = NULL;
-		}
-
-		if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
-			zend_deprecated_function(fbc);
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				UNDEF_RESULT();
-				if (!RETURN_VALUE_USED(opline)) {
-					ret = &retval;
-					ZVAL_UNDEF(ret);
-				}
-				goto fcall_by_name_end;
-			}
 		}
 
 		call->prev_execute_data = execute_data;
@@ -1755,7 +1786,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_
 		ret = RETURN_VALUE_USED(opline) ? EX_VAR(opline->result.var) : &retval;
 		ZVAL_NULL(ret);
 
-		zend_observer_fcall_begin(call);
+		zend_observer_fcall_begin_specialized(call, false);
 		fbc->internal_function.handler(call, ret);
 
 #if ZEND_DEBUG
@@ -1771,10 +1802,16 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_BY_NAME_
 		}
 #endif
 		zend_observer_fcall_end(call, EG(exception) ? NULL : ret);
+		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 		EG(current_execute_data) = execute_data;
 
+		goto fcall_by_name_end;
+	}
+
+	if (0) {
 fcall_by_name_end:
+
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1796,7 +1833,7 @@ fcall_by_name_end:
 		zend_rethrow_exception(execute_data);
 		HANDLE_EXCEPTION();
 	}
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -1806,9 +1843,25 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_RETV
 	zend_execute_data *call = EX(call);
 	zend_function *fbc = call->func;
 	zval *ret;
+	zval retval;
 
 	SAVE_OPLINE();
 	EX(call) = call->prev_execute_data;
+
+	if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
+		zend_deprecated_function(fbc);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_CLOSURE)) {
+				OBJ_RELEASE(ZEND_CLOSURE_OBJECT(call->func));
+			}
+			UNDEF_RESULT();
+			if (!0) {
+				ret = &retval;
+				ZVAL_UNDEF(ret);
+			}
+			goto fcall_end;
+		}
+	}
 
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION)) {
 		ret = NULL;
@@ -1834,22 +1887,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_RETV
 			zend_execute_ex(call);
 		}
 	} else {
-		zval retval;
 		ZEND_ASSERT(fbc->type == ZEND_INTERNAL_FUNCTION);
 		if (0) {
 			ret = NULL;
-		}
-
-		if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
-			zend_deprecated_function(fbc);
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				UNDEF_RESULT();
-				if (!0) {
-					ret = &retval;
-					ZVAL_UNDEF(ret);
-				}
-				goto fcall_end;
-			}
 		}
 
 		call->prev_execute_data = execute_data;
@@ -1882,9 +1922,16 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_RETV
 		}
 #endif
 
+		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
+
 		EG(current_execute_data) = execute_data;
 
+		goto fcall_end;
+	}
+
+	if (0) {
 fcall_end:
+
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -1904,8 +1951,7 @@ fcall_end:
 		zend_rethrow_exception(execute_data);
 		HANDLE_EXCEPTION();
 	}
-
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -1915,9 +1961,25 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_RETV
 	zend_execute_data *call = EX(call);
 	zend_function *fbc = call->func;
 	zval *ret;
+	zval retval;
 
 	SAVE_OPLINE();
 	EX(call) = call->prev_execute_data;
+
+	if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
+		zend_deprecated_function(fbc);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_CLOSURE)) {
+				OBJ_RELEASE(ZEND_CLOSURE_OBJECT(call->func));
+			}
+			UNDEF_RESULT();
+			if (!1) {
+				ret = &retval;
+				ZVAL_UNDEF(ret);
+			}
+			goto fcall_end;
+		}
+	}
 
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION)) {
 		ret = NULL;
@@ -1943,22 +2005,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_RETV
 			zend_execute_ex(call);
 		}
 	} else {
-		zval retval;
 		ZEND_ASSERT(fbc->type == ZEND_INTERNAL_FUNCTION);
 		if (0) {
 			ret = NULL;
-		}
-
-		if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
-			zend_deprecated_function(fbc);
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				UNDEF_RESULT();
-				if (!1) {
-					ret = &retval;
-					ZVAL_UNDEF(ret);
-				}
-				goto fcall_end;
-			}
 		}
 
 		call->prev_execute_data = execute_data;
@@ -1991,9 +2040,16 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_RETV
 		}
 #endif
 
+		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
+
 		EG(current_execute_data) = execute_data;
 
+		goto fcall_end;
+	}
+
+	if (0) {
 fcall_end:
+
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -2013,8 +2069,7 @@ fcall_end:
 		zend_rethrow_exception(execute_data);
 		HANDLE_EXCEPTION();
 	}
-
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -2024,9 +2079,25 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_OBS
 	zend_execute_data *call = EX(call);
 	zend_function *fbc = call->func;
 	zval *ret;
+	zval retval;
 
 	SAVE_OPLINE();
 	EX(call) = call->prev_execute_data;
+
+	if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
+		zend_deprecated_function(fbc);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_CLOSURE)) {
+				OBJ_RELEASE(ZEND_CLOSURE_OBJECT(call->func));
+			}
+			UNDEF_RESULT();
+			if (!RETURN_VALUE_USED(opline)) {
+				ret = &retval;
+				ZVAL_UNDEF(ret);
+			}
+			goto fcall_end;
+		}
+	}
 
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION)) {
 		ret = NULL;
@@ -2041,33 +2112,20 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_OBS
 		if (EXPECTED(zend_execute_ex == execute_ex)) {
 			LOAD_OPLINE_EX();
 			SAVE_OPLINE();
-			zend_observer_fcall_begin(execute_data);
+			zend_observer_fcall_begin_specialized(execute_data, false);
 			ZEND_VM_ENTER_EX();
 		} else {
 			SAVE_OPLINE_EX();
-			zend_observer_fcall_begin(execute_data);
+			zend_observer_fcall_begin_specialized(execute_data, false);
 			execute_data = EX(prev_execute_data);
 			LOAD_OPLINE();
 			ZEND_ADD_CALL_FLAG(call, ZEND_CALL_TOP);
 			zend_execute_ex(call);
 		}
 	} else {
-		zval retval;
 		ZEND_ASSERT(fbc->type == ZEND_INTERNAL_FUNCTION);
 		if (1) {
 			ret = NULL;
-		}
-
-		if (UNEXPECTED((fbc->common.fn_flags & ZEND_ACC_DEPRECATED) != 0)) {
-			zend_deprecated_function(fbc);
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				UNDEF_RESULT();
-				if (!RETURN_VALUE_USED(opline)) {
-					ret = &retval;
-					ZVAL_UNDEF(ret);
-				}
-				goto fcall_end;
-			}
 		}
 
 		call->prev_execute_data = execute_data;
@@ -2080,7 +2138,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_OBS
 		ret = RETURN_VALUE_USED(opline) ? EX_VAR(opline->result.var) : &retval;
 		ZVAL_NULL(ret);
 
-		zend_observer_fcall_begin(call);
+		zend_observer_fcall_begin_specialized(call, false);
 		if (!zend_execute_internal) {
 			/* saves one function call if zend_execute_internal is not used */
 			fbc->internal_function.handler(call, ret);
@@ -2101,10 +2159,16 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DO_FCALL_SPEC_OBS
 		}
 #endif
 		zend_observer_fcall_end(call, EG(exception) ? NULL : ret);
+		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 		EG(current_execute_data) = execute_data;
 
+		goto fcall_end;
+	}
+
+	if (0) {
 fcall_end:
+
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -2124,8 +2188,7 @@ fcall_end:
 		zend_rethrow_exception(execute_data);
 		HANDLE_EXCEPTION();
 	}
-
-	ZEND_VM_SET_OPCODE(opline + 1);
+	ZEND_VM_SET_OPCODE_NO_INTERRUPT(opline + 1);
 	ZEND_VM_CONTINUE();
 }
 
@@ -2163,6 +2226,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_GENERATOR_CREATE_SPEC_HANDLER(
 
 		/* Save execution context in generator object. */
 		generator = (zend_generator *) Z_OBJ_P(EX(return_value));
+		generator->func = gen_execute_data->func;
 		generator->execute_data = gen_execute_data;
 		generator->frozen_call_stack = NULL;
 		generator->execute_fake.opline = NULL;
@@ -2170,7 +2234,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_GENERATOR_CREATE_SPEC_HANDLER(
 		generator->execute_fake.prev_execute_data = NULL;
 		ZVAL_OBJ(&generator->execute_fake.This, (zend_object *) generator);
 
-		gen_execute_data->opline = opline + 1;
+		gen_execute_data->opline = opline;
 		/* EX(return_value) keeps pointer to zend_object (not a real zval) */
 		gen_execute_data->return_value = (zval*)generator;
 		call_info = Z_TYPE_INFO(EX(This));
@@ -2307,7 +2371,7 @@ send_again:
 		bool have_named_params = 0;
 
 		if (!ce || !ce->get_iterator) {
-			zend_type_error("Only arrays and Traversables can be unpacked");
+			zend_type_error("Only arrays and Traversables can be unpacked, %s given", zend_zval_value_name(args));
 		} else {
 
 			iter = ce->get_iterator(ce, args, 0);
@@ -2429,7 +2493,7 @@ send_again:
 		if (opline->op1_type == IS_CV && UNEXPECTED(Z_TYPE_P(args) == IS_UNDEF)) {
 			ZVAL_UNDEFINED_OP1();
 		}
-		zend_type_error("Only arrays and Traversables can be unpacked");
+		zend_type_error("Only arrays and Traversables can be unpacked, %s given", zend_zval_value_name(args));
 	}
 
 	FREE_OP(opline->op1_type, opline->op1.var);
@@ -2698,7 +2762,7 @@ add_unpack_again:
 		zend_object_iterator *iter;
 
 		if (!ce || !ce->get_iterator) {
-			zend_type_error("Only arrays and Traversables can be unpacked");
+			zend_type_error("Only arrays and Traversables can be unpacked, %s given", zend_zval_value_name(op1));
 		} else {
 			iter = ce->get_iterator(ce, op1, 0);
 			if (UNEXPECTED(!iter)) {
@@ -2773,7 +2837,7 @@ add_unpack_again:
 		op1 = Z_REFVAL_P(op1);
 		goto add_unpack_again;
 	} else {
-		zend_throw_error(NULL, "Only arrays and Traversables can be unpacked");
+		zend_throw_error(NULL, "Only arrays and Traversables can be unpacked, %s given", zend_zval_value_name(op1));
 	}
 
 	FREE_OP(opline->op1_type, opline->op1.var);
@@ -2971,37 +3035,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ISSET_ISEMPTY_STATIC_PROP_SPEC
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_EXIT_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
-{
-	USE_OPLINE
-
-	SAVE_OPLINE();
-	if (opline->op1_type != IS_UNUSED) {
-		zval *ptr = get_zval_ptr(opline->op1_type, opline->op1, BP_VAR_R);
-
-		do {
-			if (Z_TYPE_P(ptr) == IS_LONG) {
-				EG(exit_status) = Z_LVAL_P(ptr);
-			} else {
-				if ((opline->op1_type & (IS_VAR|IS_CV)) && Z_ISREF_P(ptr)) {
-					ptr = Z_REFVAL_P(ptr);
-					if (Z_TYPE_P(ptr) == IS_LONG) {
-						EG(exit_status) = Z_LVAL_P(ptr);
-						break;
-					}
-				}
-				zend_print_zval(ptr, 0);
-			}
-		} while (0);
-		FREE_OP(opline->op1_type, opline->op1.var);
-	}
-
-	if (!EG(exception)) {
-		zend_throw_unwind_exit();
-	}
-	HANDLE_EXCEPTION();
-}
-
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_BEGIN_SILENCE_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -3196,6 +3229,8 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL zend_dispatch_try
 	}
 
 	/* Uncaught exception */
+
+	/* Don't use 0 because it gets replaced by zend_vm_gen.php. */
 	if (zend_observer_fcall_op_array_extension != -1) {
 		zend_observer_fcall_end(execute_data, NULL);
 	}
@@ -3230,24 +3265,11 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_HANDLE_EXCEPTION_SPEC_HANDLER(
 		&& throw_op->extended_value & ZEND_FREE_ON_RETURN) {
 		/* exceptions thrown because of loop var destruction on return/break/...
 		 * are logically thrown at the end of the foreach loop, so adjust the
-		 * throw_op_num.
+		 * throw_op_num to the final loop variable FREE.
 		 */
-		const zend_live_range *range = find_live_range(
-			&EX(func)->op_array, throw_op_num, throw_op->op1.var);
-		/* free op1 of the corresponding RETURN */
-		for (i = throw_op_num; i < range->end; i++) {
-			if (EX(func)->op_array.opcodes[i].opcode == ZEND_FREE
-			 || EX(func)->op_array.opcodes[i].opcode == ZEND_FE_FREE) {
-				/* pass */
-			} else {
-				if (EX(func)->op_array.opcodes[i].opcode == ZEND_RETURN
-				 && (EX(func)->op_array.opcodes[i].op1_type & (IS_VAR|IS_TMP_VAR))) {
-					zval_ptr_dtor(EX_VAR(EX(func)->op_array.opcodes[i].op1.var));
-				}
-				break;
-			}
-		}
-		throw_op_num = range->end;
+		uint32_t new_throw_op_num = throw_op_num + throw_op->op2.opline_num;
+		cleanup_live_vars(execute_data, throw_op_num, new_throw_op_num);
+		throw_op_num = new_throw_op_num;
 	}
 
 	/* Find the innermost try/catch/finally the exception was thrown in */
@@ -3343,6 +3365,10 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DISCARD_EXCEPTION_SPEC_HANDLER
 		zval *return_value = EX_VAR(EX(func)->op_array.opcodes[Z_OPLINE_NUM_P(fast_call)].op2.var);
 
 		zval_ptr_dtor(return_value);
+		/* Clear return value in case we hit both DISCARD_EXCEPTION and
+		 * zend_dispatch_try_catch_finally_helper, which will free the return
+		 * value again. See OSS-Fuzz #438780145. */
+		ZVAL_NULL(return_value);
 	}
 
 	/* cleanup delayed exception */
@@ -3605,11 +3631,11 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CALL_TRAMPOLINE_SPEC_OBSERVER_
 		if (EXPECTED(zend_execute_ex == execute_ex)) {
 			LOAD_OPLINE_EX();
 			SAVE_OPLINE();
-			zend_observer_fcall_begin(execute_data);
+			zend_observer_fcall_begin_specialized(execute_data, false);
 			ZEND_VM_ENTER_EX();
 		} else {
 			SAVE_OPLINE_EX();
-			zend_observer_fcall_begin(execute_data);
+			zend_observer_fcall_begin_specialized(execute_data, false);
 			execute_data = EX(prev_execute_data);
 			if (execute_data) {
 				LOAD_OPLINE();
@@ -3633,7 +3659,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CALL_TRAMPOLINE_SPEC_OBSERVER_
 		}
 
 		ZVAL_NULL(ret);
-		zend_observer_fcall_begin(call);
+		zend_observer_fcall_begin_specialized(call, false);
 		if (!zend_execute_internal) {
 			/* saves one function call if zend_execute_internal is not used */
 			fbc->internal_function.handler(call, ret);
@@ -3686,6 +3712,154 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CALL_TRAMPOLINE_SPEC_OBSERVER_
 	LOAD_OPLINE();
 	ZEND_VM_INC_OPCODE();
 	ZEND_VM_LEAVE();
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_2_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+	zval *arg1 = get_zval_ptr_deref(opline->op1_type, opline->op1, BP_VAR_R);
+	zval *arg2 = get_zval_ptr_deref(opline->op2_type, opline->op2, BP_VAR_R);
+	if (EG(exception)) {
+		FREE_OP(opline->op1_type, opline->op1.var);
+		FREE_OP(opline->op2_type, opline->op2.var);
+		HANDLE_EXCEPTION();
+	}
+
+#if 0 || 0
+	if (0 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_2 function = (zend_frameless_function_2)ZEND_FLF_HANDLER(opline);
+		function(result, arg1, arg2);
+	}
+
+	FREE_OP(opline->op1_type, opline->op1.var);
+	/* Set OP1 to UNDEF in case FREE_OP(opline->op2_type, opline->op2.var) throws. */
+	if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+		ZVAL_UNDEF(EX_VAR(opline->op1.var));
+	}
+	FREE_OP(opline->op2_type, opline->op2.var);
+	ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_2_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+	zval *arg1 = get_zval_ptr_deref(opline->op1_type, opline->op1, BP_VAR_R);
+	zval *arg2 = get_zval_ptr_deref(opline->op2_type, opline->op2, BP_VAR_R);
+	if (EG(exception)) {
+		FREE_OP(opline->op1_type, opline->op1.var);
+		FREE_OP(opline->op2_type, opline->op2.var);
+		HANDLE_EXCEPTION();
+	}
+
+#if 0 || 1
+	if (1 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_2 function = (zend_frameless_function_2)ZEND_FLF_HANDLER(opline);
+		function(result, arg1, arg2);
+	}
+
+	FREE_OP(opline->op1_type, opline->op1.var);
+	/* Set OP1 to UNDEF in case FREE_OP(opline->op2_type, opline->op2.var) throws. */
+	if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+		ZVAL_UNDEF(EX_VAR(opline->op1.var));
+	}
+	FREE_OP(opline->op2_type, opline->op2.var);
+	ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_3_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+	zval *arg1 = get_zval_ptr_deref(opline->op1_type, opline->op1, BP_VAR_R);
+	zval *arg2 = get_zval_ptr_deref(opline->op2_type, opline->op2, BP_VAR_R);
+	zval *arg3 = get_op_data_zval_ptr_deref_r((opline+1)->op1_type, (opline+1)->op1);
+	if (EG(exception)) {
+		FREE_OP(opline->op1_type, opline->op1.var);
+		FREE_OP(opline->op2_type, opline->op2.var);
+		FREE_OP((opline+1)->op1_type, (opline+1)->op1.var);
+		HANDLE_EXCEPTION();
+	}
+
+#if 0 || 0
+	if (0 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_3 function = (zend_frameless_function_3)ZEND_FLF_HANDLER(opline);
+		function(result, arg1, arg2, arg3);
+	}
+
+	FREE_OP(opline->op1_type, opline->op1.var);
+	/* Set to UNDEF in case FREE_OP(opline->op2_type, opline->op2.var) throws. */
+	if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+		ZVAL_UNDEF(EX_VAR(opline->op1.var));
+	}
+	FREE_OP(opline->op2_type, opline->op2.var);
+	if (opline->op2_type & (IS_VAR|IS_TMP_VAR)) {
+		ZVAL_UNDEF(EX_VAR(opline->op2.var));
+	}
+	FREE_OP((opline+1)->op1_type, (opline+1)->op1.var);
+	ZEND_VM_NEXT_OPCODE_EX(1, 2);
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_3_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+	zval *arg1 = get_zval_ptr_deref(opline->op1_type, opline->op1, BP_VAR_R);
+	zval *arg2 = get_zval_ptr_deref(opline->op2_type, opline->op2, BP_VAR_R);
+	zval *arg3 = get_op_data_zval_ptr_deref_r((opline+1)->op1_type, (opline+1)->op1);
+	if (EG(exception)) {
+		FREE_OP(opline->op1_type, opline->op1.var);
+		FREE_OP(opline->op2_type, opline->op2.var);
+		FREE_OP((opline+1)->op1_type, (opline+1)->op1.var);
+		HANDLE_EXCEPTION();
+	}
+
+#if 0 || 1
+	if (1 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_3 function = (zend_frameless_function_3)ZEND_FLF_HANDLER(opline);
+		function(result, arg1, arg2, arg3);
+	}
+
+	FREE_OP(opline->op1_type, opline->op1.var);
+	/* Set to UNDEF in case FREE_OP(opline->op2_type, opline->op2.var) throws. */
+	if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+		ZVAL_UNDEF(EX_VAR(opline->op1.var));
+	}
+	FREE_OP(opline->op2_type, opline->op2.var);
+	if (opline->op2_type & (IS_VAR|IS_TMP_VAR)) {
+		ZVAL_UNDEF(EX_VAR(opline->op2.var));
+	}
+	FREE_OP((opline+1)->op1_type, (opline+1)->op1.var);
+	ZEND_VM_NEXT_OPCODE_EX(1, 2);
 }
 
 static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_JMP_FORWARD_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
@@ -3865,6 +4039,24 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_FCALL_SPEC_CO
 	ZEND_VM_NEXT_OPCODE();
 }
 
+static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_FCALL_OFFSET_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zend_function *fbc;
+	zend_execute_data *call;
+	fbc = CACHED_PTR(opline->result.num);
+	if (UNEXPECTED(fbc == NULL)) {
+		fbc = Z_PTR(EG(function_table)->arData[Z_EXTRA_P(RT_CONSTANT(opline, opline->op2))].val);
+		CACHE_PTR(opline->result.num, fbc);
+	}
+	call = _zend_vm_stack_push_call_frame_ex(
+		opline->op1.num, ZEND_CALL_NESTED_FUNCTION,
+		fbc, opline->extended_value, NULL);
+	call->prev_execute_data = EX(call);
+	EX(call) = call;
+	ZEND_VM_NEXT_OPCODE();
+}
+
 static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_RECV_INIT_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -3903,7 +4095,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_RECV_INIT_SPEC_CON
 		}
 	} else {
 recv_init_check_type:
-		if (UNEXPECTED((EX(func)->op_array.fn_flags & ZEND_ACC_HAS_TYPE_HINTS) != 0)) {
+		if ((EX(func)->op_array.fn_flags & ZEND_ACC_HAS_TYPE_HINTS) != 0) {
 			SAVE_OPLINE();
 			if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), arg_num, param, CACHE_ADDR(opline->extended_value)))) {
 				HANDLE_EXCEPTION();
@@ -4007,7 +4199,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_RECV_VARIADIC_SPEC_UNUSED_HAND
 		zend_hash_real_init_packed(Z_ARRVAL_P(params));
 		ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(params)) {
 			zval *param = EX_VAR_NUM(EX(func)->op_array.last_var + EX(func)->op_array.T);
-			if (UNEXPECTED(ZEND_TYPE_IS_SET(arg_info->type))) {
+			if (ZEND_TYPE_IS_SET(arg_info->type)) {
 				ZEND_ADD_CALL_FLAG(execute_data, ZEND_CALL_FREE_EXTRA_ARGS);
 				do {
 					if (UNEXPECTED(!zend_verify_variadic_arg_type(EX(func), arg_info, arg_num, param, CACHE_ADDR(opline->extended_value)))) {
@@ -4056,6 +4248,58 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_RECV_VARIADIC_SPEC_UNUSED_HAND
 		}
 	}
 
+	ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_1_SPEC_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+	zval *arg1 = get_zval_ptr_deref(opline->op1_type, opline->op1, BP_VAR_R);
+	if (EG(exception)) {
+		FREE_OP(opline->op1_type, opline->op1.var);
+		HANDLE_EXCEPTION();
+	}
+
+#if 0 || 0
+	if (0 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_1 function = (zend_frameless_function_1)ZEND_FLF_HANDLER(opline);
+		function(result, arg1);
+	}
+	FREE_OP(opline->op1_type, opline->op1.var);
+	ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_1_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+	zval *arg1 = get_zval_ptr_deref(opline->op1_type, opline->op1, BP_VAR_R);
+	if (EG(exception)) {
+		FREE_OP(opline->op1_type, opline->op1.var);
+		HANDLE_EXCEPTION();
+	}
+
+#if 0 || 1
+	if (1 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_1 function = (zend_frameless_function_1)ZEND_FLF_HANDLER(opline);
+		function(result, arg1);
+	}
+	FREE_OP(opline->op1_type, opline->op1.var);
 	ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
 }
 
@@ -4941,9 +5185,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CAST_SPEC_CONST_H
 					} else {
 						ZVAL_EMPTY_ARRAY(result);
 					}
-				} else if (Z_OBJ_P(expr)->properties == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties_for == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties == zend_std_get_properties) {
+				} else if (ZEND_STD_BUILD_OBJECT_PROPERTIES_ARRAY_COMPATIBLE(expr)) {
 					/* Optimized version without rebuilding properties HashTable */
 					ZVAL_ARR(result, zend_std_build_object_properties_array(Z_OBJ_P(expr)));
 				} else {
@@ -5126,7 +5368,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INCLUDE_OR_EVAL_SPEC_OBSERVER_
 
 		call->prev_execute_data = execute_data;
 		i_init_code_execute_data(call, new_op_array, return_value);
-		zend_observer_fcall_begin(call);
+		zend_observer_fcall_begin_specialized(call, false);
 		if (EXPECTED(zend_execute_ex == execute_ex)) {
 			FREE_OP(opline->op1_type, opline->op1.var);
 			ZEND_VM_ENTER();
@@ -5170,6 +5412,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_R_SPEC_CONST_HANDLER(
 	} else if (IS_CONST != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		zend_object *zobj = Z_OBJ_P(array_ptr);
 		if (!zobj->ce->get_iterator) {
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+
+					HANDLE_EXCEPTION();
+				}
+			}
 			HashTable *properties = zobj->properties;
 			if (properties) {
 				if (UNEXPECTED(GC_REFCOUNT(properties) > 1)) {
@@ -5256,7 +5506,16 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_RW_SPEC_
 		ZEND_VM_NEXT_OPCODE();
 	} else if (IS_CONST != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		if (!Z_OBJCE_P(array_ptr)->get_iterator) {
+			zend_object *zobj = Z_OBJ_P(array_ptr);
 			HashTable *properties;
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+
+					HANDLE_EXCEPTION();
+				}
+			}
 			if (IS_CONST == IS_VAR || IS_CONST == IS_CV) {
 				if (array_ptr == array_ref) {
 					ZVAL_NEW_REF(array_ref, array_ref);
@@ -5604,10 +5863,6 @@ yield_from_try_again:
 	/* This generator has no send target (though the generator we delegate to might have one) */
 	generator->send_target = NULL;
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -5733,6 +5988,29 @@ defined_false:
 		goto defined_false;
 	} else {
 		goto defined_true;
+	}
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_JMP_FRAMELESS_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zend_jmp_fl_result result = (uintptr_t)CACHED_PTR(opline->extended_value);
+try_again:
+	if (EXPECTED(result == ZEND_JMP_FL_HIT)) {
+		OPLINE = OP_JMP_ADDR(opline, opline->op2);
+		ZEND_VM_CONTINUE();
+	} else if (EXPECTED(result == ZEND_JMP_FL_MISS)) {
+		ZEND_VM_NEXT_OPCODE();
+	} else {
+		ZEND_ASSERT(result == ZEND_JMP_FL_UNPRIMED);
+		/* func_name refers to the function in the local namespace, e.g. foo\substr. */
+		zval *func_name = (zval *)RT_CONSTANT(opline, opline->op1);
+		/* If it cannot be found locally, we must be referring to the global function. */
+		zval *func = zend_hash_find_known_hash(EG(function_table), Z_STR_P(func_name));
+		/* ZEND_JMP_FL_MISS = 1, ZEND_JMP_FL_HIT = 2 */
+		result = (func == NULL) + 1;
+		CACHE_PTR(opline->extended_value, (void *)result);
+		goto try_again;
 	}
 }
 
@@ -6429,6 +6707,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CONST & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -6439,7 +6718,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_CONST & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_CONST & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -6556,6 +6874,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CONST & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -6566,7 +6885,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -6883,7 +7210,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CONST == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if ((IS_CONST & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -7289,8 +7616,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_CLASS_CONSTANT_SPEC_CONS
 			}
 
 			bool is_constant_deprecated = ZEND_CLASS_CONST_FLAGS(c) & ZEND_ACC_DEPRECATED;
-			if (UNEXPECTED(is_constant_deprecated)) {
-				zend_error(E_DEPRECATED, "Constant %s::%s is deprecated", ZSTR_VAL(ce->name), ZSTR_VAL(constant_name));
+			if (UNEXPECTED(is_constant_deprecated) && !CONST_IS_RECURSIVE(c)) {
+				if (c->ce->type == ZEND_USER_CLASS) {
+					/* Recursion protection only applied to user constants, GH-18463 */
+					CONST_PROTECT_RECURSION(c);
+				}
+				zend_deprecated_class_constant(c, constant_name);
+				if (c->ce->type == ZEND_USER_CLASS) {
+					CONST_UNPROTECT_RECURSION(c);
+				}
 
 				if (EG(exception)) {
 					ZVAL_UNDEF(EX_VAR(opline->result.var));
@@ -7611,7 +7945,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DECLARE_CLASS_DELAYED_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -7774,10 +8107,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CONST_CONST_HANDLER
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -8455,8 +8784,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_CLASS_CONSTANT_SPEC_CONS
 			}
 
 			bool is_constant_deprecated = ZEND_CLASS_CONST_FLAGS(c) & ZEND_ACC_DEPRECATED;
-			if (UNEXPECTED(is_constant_deprecated)) {
-				zend_error(E_DEPRECATED, "Constant %s::%s is deprecated", ZSTR_VAL(ce->name), ZSTR_VAL(constant_name));
+			if (UNEXPECTED(is_constant_deprecated) && !CONST_IS_RECURSIVE(c)) {
+				if (c->ce->type == ZEND_USER_CLASS) {
+					/* Recursion protection only applied to user constants, GH-18463 */
+					CONST_PROTECT_RECURSION(c);
+				}
+				zend_deprecated_class_constant(c, constant_name);
+				if (c->ce->type == ZEND_USER_CLASS) {
+					CONST_UNPROTECT_RECURSION(c);
+				}
 
 				if (EG(exception)) {
 					ZVAL_UNDEF(EX_VAR(opline->result.var));
@@ -8960,6 +9296,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CONST & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -8970,7 +9307,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_CONST & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_CONST & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -9087,6 +9463,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CONST & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -9097,7 +9474,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -9414,7 +9799,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 			zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 			if ((IS_CONST & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -9954,7 +10339,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -10068,10 +10452,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CONST_TMPVAR_HANDLE
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -10129,8 +10509,8 @@ fetch_this:
 				/* Keep name alive in case an error handler tries to free it. */
 				zend_string_addref(name);
 			}
-			zend_error(E_WARNING, "Undefined %svariable $%s",
-				(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), ZSTR_VAL(name));
+			zend_error_unchecked(E_WARNING, "Undefined %svariable $%S",
+				(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), name);
 			if (type == BP_VAR_RW && !EG(exception)) {
 				retval = zend_hash_update(target_symbol_table, name, &EG(uninitialized_zval));
 			} else {
@@ -10152,8 +10532,8 @@ fetch_this:
 			} else if (type == BP_VAR_IS || type == BP_VAR_UNSET) {
 				retval = &EG(uninitialized_zval);
 			} else {
-				zend_error(E_WARNING, "Undefined %svariable $%s",
-					(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), ZSTR_VAL(name));
+				zend_error_unchecked(E_WARNING, "Undefined %svariable $%S",
+					(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), name);
 				if (type == BP_VAR_RW && !EG(exception)) {
 					ZVAL_NULL(retval);
 				} else {
@@ -10765,8 +11145,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ISSET_ISEMPTY_VAR_SPEC_CONST_U
 {
 	USE_OPLINE
 	zval *value;
-	/* Should be bool result? as below got: result = (opline->extended_value & ZEND_ISEMPTY) */
-	int result;
+	bool result;
 	zval *varname;
 	zend_string *name, *tmp_name;
 	HashTable *target_symbol_table;
@@ -10802,7 +11181,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ISSET_ISEMPTY_VAR_SPEC_CONST_U
 		}
 	}
 
-	ZEND_VM_SMART_BRANCH(result, 1);
+	ZEND_VM_SMART_BRANCH(result, true);
 }
 
 /* No specialization for op_types (CONST|TMPVAR|CV, UNUSED|CLASS_FETCH|CONST|VAR) */
@@ -10917,10 +11296,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CONST_UNUSED_HANDLE
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -11133,6 +11508,62 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSE
 }
 
 /* Contrary to what its name indicates, ZEND_COPY_TMP may receive and define references. */
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zend_class_entry *ce = EX(func)->common.scope;
+	ZEND_ASSERT(ce);
+
+	zend_class_entry *parent_ce = ce->parent;
+	if (!parent_ce) {
+		zend_throw_error(NULL, "Cannot use \"parent\" when current class scope has no parent");
+		UNDEF_RESULT();
+		HANDLE_EXCEPTION();
+	}
+
+	zend_string *property_name = Z_STR_P(RT_CONSTANT(opline, opline->op1));
+	zend_property_hook_kind hook_kind = opline->op2.num;
+
+	zend_property_info *prop_info = zend_hash_find_ptr(&parent_ce->properties_info, property_name);
+	if (!prop_info) {
+		zend_throw_error(NULL, "Undefined property %s::$%s", ZSTR_VAL(parent_ce->name), ZSTR_VAL(property_name));
+		UNDEF_RESULT();
+		HANDLE_EXCEPTION();
+	}
+	if (prop_info->flags & ZEND_ACC_PRIVATE) {
+		zend_throw_error(NULL, "Cannot access private property %s::$%s", ZSTR_VAL(parent_ce->name), ZSTR_VAL(property_name));
+		UNDEF_RESULT();
+		HANDLE_EXCEPTION();
+	}
+
+	zend_function **hooks = prop_info->hooks;
+	zend_function *hook = hooks ? hooks[hook_kind] : NULL;
+
+	zend_execute_data *call;
+	if (hook) {
+		call = zend_vm_stack_push_call_frame(
+			ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS,
+			hook, opline->extended_value, Z_OBJ_P(ZEND_THIS));
+		if (EXPECTED(hook->type == ZEND_USER_FUNCTION)) {
+			if (UNEXPECTED(!RUN_TIME_CACHE(&hook->op_array))) {
+				init_func_run_time_cache(&hook->op_array);
+			}
+			call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+		}
+	} else {
+		zend_function *fbc = zend_get_property_hook_trampoline(prop_info, hook_kind, property_name);
+		call = zend_vm_stack_push_call_frame(
+			ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS,
+			fbc, opline->extended_value, Z_OBJ_P(ZEND_THIS));
+	}
+
+	call->prev_execute_data = EX(call);
+	EX(call) = call;
+	ZEND_VM_NEXT_OPCODE();
+}
+
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DIV_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -11359,6 +11790,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CONST & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -11369,7 +11801,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_CONST & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_CONST & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -11486,6 +11957,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CONST & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -11496,7 +11968,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -11813,7 +12293,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CV == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if ((IS_CONST & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -12351,7 +12831,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -12463,10 +12942,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CONST_CV_HANDLER(ZE
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -15012,10 +15487,6 @@ yield_from_try_again:
 	/* This generator has no send target (though the generator we delegate to might have one) */
 	generator->send_target = NULL;
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -15752,6 +16223,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CONST_
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || ((IS_TMP_VAR|IS_VAR) & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -15762,7 +16234,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if ((IS_TMP_VAR|IS_VAR) & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if ((IS_TMP_VAR|IS_VAR) & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -15879,6 +16390,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CONST
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || ((IS_TMP_VAR|IS_VAR) & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -15889,7 +16401,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -16177,7 +16697,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CONST == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if (((IS_TMP_VAR|IS_VAR) & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -16472,7 +16992,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INSTANCEOF_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -17197,6 +17716,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_TMPVAR_TMPVAR
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || ((IS_TMP_VAR|IS_VAR) & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -17207,7 +17727,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if ((IS_TMP_VAR|IS_VAR) & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if ((IS_TMP_VAR|IS_VAR) & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -17324,6 +17883,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_TMPVA
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || ((IS_TMP_VAR|IS_VAR) & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -17334,7 +17894,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -17622,7 +18190,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_T
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 			zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 			if (((IS_TMP_VAR|IS_VAR) & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -17890,7 +18458,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INSTANCEOF_SPEC_TMPVAR_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -17986,8 +18553,8 @@ fetch_this:
 				/* Keep name alive in case an error handler tries to free it. */
 				zend_string_addref(name);
 			}
-			zend_error(E_WARNING, "Undefined %svariable $%s",
-				(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), ZSTR_VAL(name));
+			zend_error_unchecked(E_WARNING, "Undefined %svariable $%S",
+				(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), name);
 			if (type == BP_VAR_RW && !EG(exception)) {
 				retval = zend_hash_update(target_symbol_table, name, &EG(uninitialized_zval));
 			} else {
@@ -18009,8 +18576,8 @@ fetch_this:
 			} else if (type == BP_VAR_IS || type == BP_VAR_UNSET) {
 				retval = &EG(uninitialized_zval);
 			} else {
-				zend_error(E_WARNING, "Undefined %svariable $%s",
-					(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), ZSTR_VAL(name));
+				zend_error_unchecked(E_WARNING, "Undefined %svariable $%S",
+					(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), name);
 				if (type == BP_VAR_RW && !EG(exception)) {
 					ZVAL_NULL(retval);
 				} else {
@@ -18141,8 +18708,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ISSET_ISEMPTY_VAR_SPEC_TMPVAR_
 {
 	USE_OPLINE
 	zval *value;
-	/* Should be bool result? as below got: result = (opline->extended_value & ZEND_ISEMPTY) */
-	int result;
+	bool result;
 	zval *varname;
 	zend_string *name, *tmp_name;
 	HashTable *target_symbol_table;
@@ -18179,7 +18745,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ISSET_ISEMPTY_VAR_SPEC_TMPVAR_
 		}
 	}
 
-	ZEND_VM_SMART_BRANCH(result, 1);
+	ZEND_VM_SMART_BRANCH(result, true);
 }
 
 /* No specialization for op_types (CONST|TMPVAR|CV, UNUSED|CLASS_FETCH|CONST|VAR) */
@@ -18557,6 +19123,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CV_HAN
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || ((IS_TMP_VAR|IS_VAR) & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -18567,7 +19134,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if ((IS_TMP_VAR|IS_VAR) & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if ((IS_TMP_VAR|IS_VAR) & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -18684,6 +19290,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CV_HA
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || ((IS_TMP_VAR|IS_VAR) & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -18694,7 +19301,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -18982,7 +19597,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CV == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if (((IS_TMP_VAR|IS_VAR) & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -19249,7 +19864,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_RETURN_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -19507,9 +20121,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CAST_SPEC_TMP_HANDLER(ZEND_OPC
 					} else {
 						ZVAL_EMPTY_ARRAY(result);
 					}
-				} else if (Z_OBJ_P(expr)->properties == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties_for == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties == zend_std_get_properties) {
+				} else if (ZEND_STD_BUILD_OBJECT_PROPERTIES_ARRAY_COMPATIBLE(expr)) {
 					/* Optimized version without rebuilding properties HashTable */
 					ZVAL_ARR(result, zend_std_build_object_properties_array(Z_OBJ_P(expr)));
 				} else {
@@ -19571,6 +20183,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_R_SPEC_TMP_HANDLER(ZE
 	} else if (IS_TMP_VAR != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		zend_object *zobj = Z_OBJ_P(array_ptr);
 		if (!zobj->ce->get_iterator) {
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+
+					HANDLE_EXCEPTION();
+				}
+			}
 			HashTable *properties = zobj->properties;
 			if (properties) {
 				if (UNEXPECTED(GC_REFCOUNT(properties) > 1)) {
@@ -19658,7 +20278,16 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_RW_SPEC_TMP_HANDLER(Z
 		ZEND_VM_NEXT_OPCODE();
 	} else if (IS_TMP_VAR != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		if (!Z_OBJCE_P(array_ptr)->get_iterator) {
+			zend_object *zobj = Z_OBJ_P(array_ptr);
 			HashTable *properties;
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+
+					HANDLE_EXCEPTION();
+				}
+			}
 			if (IS_TMP_VAR == IS_VAR || IS_TMP_VAR == IS_CV) {
 				if (array_ptr == array_ref) {
 					ZVAL_NEW_REF(array_ref, array_ref);
@@ -20332,10 +20961,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_TMP_CONST_HANDLER(Z
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -20777,10 +21402,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_TMP_TMPVAR_HANDLER(
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -21239,10 +21860,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_TMP_UNUSED_HANDLER(
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -21643,10 +22260,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_TMP_CV_HANDLER(ZEND
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -22180,9 +22793,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CAST_SPEC_VAR_HANDLER(ZEND_OPC
 					} else {
 						ZVAL_EMPTY_ARRAY(result);
 					}
-				} else if (Z_OBJ_P(expr)->properties == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties_for == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties == zend_std_get_properties) {
+				} else if (ZEND_STD_BUILD_OBJECT_PROPERTIES_ARRAY_COMPATIBLE(expr)) {
 					/* Optimized version without rebuilding properties HashTable */
 					ZVAL_ARR(result, zend_std_build_object_properties_array(Z_OBJ_P(expr)));
 				} else {
@@ -22245,6 +22856,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_R_SPEC_VAR_HANDLER(ZE
 	} else if (IS_VAR != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		zend_object *zobj = Z_OBJ_P(array_ptr);
 		if (!zobj->ce->get_iterator) {
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+					zval_ptr_dtor_nogc(EX_VAR(opline->op1.var));
+					HANDLE_EXCEPTION();
+				}
+			}
 			HashTable *properties = zobj->properties;
 			if (properties) {
 				if (UNEXPECTED(GC_REFCOUNT(properties) > 1)) {
@@ -22333,7 +22952,16 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_RW_SPEC_VAR_HANDLER(Z
 		ZEND_VM_NEXT_OPCODE();
 	} else if (IS_VAR != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		if (!Z_OBJCE_P(array_ptr)->get_iterator) {
+			zend_object *zobj = Z_OBJ_P(array_ptr);
 			HashTable *properties;
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+					zval_ptr_dtor_nogc(EX_VAR(opline->op1.var));
+					HANDLE_EXCEPTION();
+				}
+			}
 			if (IS_VAR == IS_VAR || IS_VAR == IS_CV) {
 				if (array_ptr == array_ref) {
 					ZVAL_NEW_REF(array_ref, array_ref);
@@ -22536,7 +23164,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_FETCH_RW_SPEC_VAR_HANDLER(Z
 			while (1) {
 				if (UNEXPECTED(pos >= fe_ht->nNumUsed)) {
 					/* reached end of iteration */
-					goto fe_fetch_w_exit;
+					goto fe_fetch_w_exit_exc;
 				}
 				pos++;
 				value = &p->val;
@@ -22550,7 +23178,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_FETCH_RW_SPEC_VAR_HANDLER(Z
 							if ((value_type & Z_TYPE_MASK) != IS_REFERENCE) {
 								zend_property_info *prop_info =
 									zend_get_property_info_for_slot(Z_OBJ_P(array), value);
-								if (UNEXPECTED(prop_info)) {
+								if (prop_info) {
 									if (UNEXPECTED(prop_info->flags & ZEND_ACC_READONLY)) {
 										zend_throw_error(NULL,
 											"Cannot acquire reference to readonly property %s::$%s",
@@ -22632,6 +23260,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_FETCH_RW_SPEC_VAR_HANDLER(Z
 		}
 	} else {
 		zend_error(E_WARNING, "foreach() argument must be of type array|object, %s given", zend_zval_value_name(array));
+fe_fetch_w_exit_exc:
 		if (UNEXPECTED(EG(exception))) {
 			UNDEF_RESULT();
 			HANDLE_EXCEPTION();
@@ -22903,6 +23532,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CONST_H
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -22940,14 +23570,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -22960,12 +23589,8 @@ assign_op_object:
 						}
 					}
 
-					if (IS_CONST == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -23129,6 +23754,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_VAR_CONST_HAN
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -23164,18 +23790,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if (IS_CONST == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -23196,6 +23818,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_VAR_CONST_HA
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -23231,17 +23854,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if (IS_CONST == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -23333,7 +23951,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_VAR_CONST_HAN
 	zend_fetch_property_address(
 		result, container, IS_VAR, property, IS_CONST,
 		((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -23350,7 +23968,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_VAR_CONST_HA
 	container = _get_zval_ptr_ptr_var(opline->op1.var EXECUTE_DATA_CC);
 	property = RT_CONSTANT(opline, opline->op2);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_VAR, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_VAR, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -23384,7 +24002,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CONST
 	container = _get_zval_ptr_ptr_var(opline->op1.var EXECUTE_DATA_CC);
 	property = RT_CONSTANT(opline, opline->op2);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_VAR, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_VAR, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -23443,13 +24061,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -23461,8 +24081,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -23477,9 +24107,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -23503,13 +24130,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -23577,13 +24215,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -23595,8 +24235,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -23611,9 +24261,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -23637,13 +24284,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -23711,13 +24369,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -23729,8 +24389,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -23745,9 +24415,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -23771,13 +24438,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -23845,13 +24523,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -23863,8 +24543,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -23879,9 +24569,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -23905,13 +24592,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -25200,8 +25898,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_
 			}
 
 			bool is_constant_deprecated = ZEND_CLASS_CONST_FLAGS(c) & ZEND_ACC_DEPRECATED;
-			if (UNEXPECTED(is_constant_deprecated)) {
-				zend_error(E_DEPRECATED, "Constant %s::%s is deprecated", ZSTR_VAL(ce->name), ZSTR_VAL(constant_name));
+			if (UNEXPECTED(is_constant_deprecated) && !CONST_IS_RECURSIVE(c)) {
+				if (c->ce->type == ZEND_USER_CLASS) {
+					/* Recursion protection only applied to user constants, GH-18463 */
+					CONST_PROTECT_RECURSION(c);
+				}
+				zend_deprecated_class_constant(c, constant_name);
+				if (c->ce->type == ZEND_USER_CLASS) {
+					CONST_UNPROTECT_RECURSION(c);
+				}
 
 				if (EG(exception)) {
 					ZVAL_UNDEF(EX_VAR(opline->result.var));
@@ -25609,10 +26314,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_VAR_CONST_HANDLER(Z
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -25774,8 +26475,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_
 			}
 
 			bool is_constant_deprecated = ZEND_CLASS_CONST_FLAGS(c) & ZEND_ACC_DEPRECATED;
-			if (UNEXPECTED(is_constant_deprecated)) {
-				zend_error(E_DEPRECATED, "Constant %s::%s is deprecated", ZSTR_VAL(ce->name), ZSTR_VAL(constant_name));
+			if (UNEXPECTED(is_constant_deprecated) && !CONST_IS_RECURSIVE(c)) {
+				if (c->ce->type == ZEND_USER_CLASS) {
+					/* Recursion protection only applied to user constants, GH-18463 */
+					CONST_PROTECT_RECURSION(c);
+				}
+				zend_deprecated_class_constant(c, constant_name);
+				if (c->ce->type == ZEND_USER_CLASS) {
+					CONST_UNPROTECT_RECURSION(c);
+				}
 
 				if (EG(exception)) {
 					ZVAL_UNDEF(EX_VAR(opline->result.var));
@@ -25825,6 +26533,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_VAR_TMPVAR_
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -25862,14 +26571,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -25882,12 +26590,8 @@ assign_op_object:
 						}
 					}
 
-					if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -26053,6 +26757,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_VAR_TMPVAR_HA
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -26088,18 +26793,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -26121,6 +26822,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_VAR_TMPVAR_H
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -26156,17 +26858,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -26259,7 +26956,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_VAR_TMPVAR_HA
 	zend_fetch_property_address(
 		result, container, IS_VAR, property, (IS_TMP_VAR|IS_VAR),
 		(((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -26276,7 +26973,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_VAR_TMPVAR_H
 	container = _get_zval_ptr_ptr_var(opline->op1.var EXECUTE_DATA_CC);
 	property = _get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_VAR, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_VAR, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -26310,7 +27007,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_VAR_TMPVA
 	container = _get_zval_ptr_ptr_var(opline->op1.var EXECUTE_DATA_CC);
 	property = _get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_VAR, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_VAR, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -26370,13 +27067,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -26388,8 +27087,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -26404,9 +27113,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -26430,13 +27136,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -26504,13 +27221,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -26522,8 +27241,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -26538,9 +27267,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -26564,13 +27290,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -26638,13 +27375,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -26656,8 +27395,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -26672,9 +27421,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -26698,13 +27444,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -26772,13 +27529,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -26790,8 +27549,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -26806,9 +27575,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -26832,13 +27598,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -28062,10 +28839,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_VAR_TMPVAR_HANDLER(
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -30019,10 +30792,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_VAR_UNUSED_HANDLER(
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -30124,6 +30893,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CV_HAND
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -30161,14 +30931,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -30181,12 +30950,8 @@ assign_op_object:
 						}
 					}
 
-					if (IS_CV == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -30350,6 +31115,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_VAR_CV_HANDLE
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -30385,18 +31151,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if (IS_CV == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -30417,6 +31179,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_VAR_CV_HANDL
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -30452,17 +31215,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if (IS_CV == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -30554,7 +31312,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_VAR_CV_HANDLE
 	zend_fetch_property_address(
 		result, container, IS_VAR, property, IS_CV,
 		((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -30571,7 +31329,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_VAR_CV_HANDL
 	container = _get_zval_ptr_ptr_var(opline->op1.var EXECUTE_DATA_CC);
 	property = _get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_VAR, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_VAR, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -30605,7 +31363,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CV_HA
 	container = _get_zval_ptr_ptr_var(opline->op1.var EXECUTE_DATA_CC);
 	property = _get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_VAR, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_VAR, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_VAR == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -30664,13 +31422,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -30682,8 +31442,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -30698,9 +31468,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -30724,13 +31491,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -30798,13 +31576,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -30816,8 +31596,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -30832,9 +31622,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -30858,13 +31645,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -30932,13 +31730,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -30950,8 +31750,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -30966,9 +31776,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -30992,13 +31799,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -31066,13 +31884,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -31084,8 +31904,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -31100,9 +31930,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -31126,13 +31953,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -32450,10 +33288,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_VAR_CV_HANDLER(ZEND
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -32729,6 +33563,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CONS
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -32766,14 +33601,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -32786,12 +33620,8 @@ assign_op_object:
 						}
 					}
 
-					if (IS_CONST == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -32825,6 +33655,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_UNUSED_CONST_
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -32860,18 +33691,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if (IS_CONST == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -32892,6 +33719,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_UNUSED_CONST
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -32927,17 +33755,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if (IS_CONST == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -32992,6 +33815,7 @@ static zend_always_inline ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_UNUSED & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -33002,7 +33826,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_UNUSED & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_UNUSED & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -33098,7 +33961,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_UNUSED_CONST_
 	zend_fetch_property_address(
 		result, container, IS_UNUSED, property, IS_CONST,
 		((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -33115,7 +33978,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CONST
 	container = &EX(This);
 	property = RT_CONSTANT(opline, opline->op2);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -33162,6 +34025,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CONST
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_UNUSED & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -33172,7 +34036,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -33261,7 +34133,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CO
 	container = &EX(This);
 	property = RT_CONSTANT(opline, opline->op2);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -33298,13 +34170,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -33316,8 +34190,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -33332,9 +34216,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -33358,13 +34239,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -33432,13 +34324,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -33450,8 +34344,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -33466,9 +34370,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -33492,13 +34393,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -33566,13 +34478,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -33584,8 +34498,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -33600,9 +34524,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -33626,13 +34547,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -33700,13 +34632,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -33718,8 +34652,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -33734,9 +34678,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -33760,13 +34701,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -34054,7 +35006,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_S
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CONST == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if ((IS_UNUSED & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -34372,8 +35324,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUS
 			}
 
 			bool is_constant_deprecated = ZEND_CLASS_CONST_FLAGS(c) & ZEND_ACC_DEPRECATED;
-			if (UNEXPECTED(is_constant_deprecated)) {
-				zend_error(E_DEPRECATED, "Constant %s::%s is deprecated", ZSTR_VAL(ce->name), ZSTR_VAL(constant_name));
+			if (UNEXPECTED(is_constant_deprecated) && !CONST_IS_RECURSIVE(c)) {
+				if (c->ce->type == ZEND_USER_CLASS) {
+					/* Recursion protection only applied to user constants, GH-18463 */
+					CONST_PROTECT_RECURSION(c);
+				}
+				zend_deprecated_class_constant(c, constant_name);
+				if (c->ce->type == ZEND_USER_CLASS) {
+					CONST_UNPROTECT_RECURSION(c);
+				}
 
 				if (EG(exception)) {
 					ZVAL_UNDEF(EX_VAR(opline->result.var));
@@ -34643,10 +35602,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_UNUSED_CONST_HANDLE
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -34736,8 +35691,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUS
 			}
 
 			bool is_constant_deprecated = ZEND_CLASS_CONST_FLAGS(c) & ZEND_ACC_DEPRECATED;
-			if (UNEXPECTED(is_constant_deprecated)) {
-				zend_error(E_DEPRECATED, "Constant %s::%s is deprecated", ZSTR_VAL(ce->name), ZSTR_VAL(constant_name));
+			if (UNEXPECTED(is_constant_deprecated) && !CONST_IS_RECURSIVE(c)) {
+				if (c->ce->type == ZEND_USER_CLASS) {
+					/* Recursion protection only applied to user constants, GH-18463 */
+					CONST_PROTECT_RECURSION(c);
+				}
+				zend_deprecated_class_constant(c, constant_name);
+				if (c->ce->type == ZEND_USER_CLASS) {
+					CONST_UNPROTECT_RECURSION(c);
+				}
 
 				if (EG(exception)) {
 					ZVAL_UNDEF(EX_VAR(opline->result.var));
@@ -34787,6 +35749,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_TMPV
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -34824,14 +35787,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -34844,12 +35806,8 @@ assign_op_object:
 						}
 					}
 
-					if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -34883,6 +35841,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_UNUSED_TMPVAR
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -34918,18 +35877,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -34951,6 +35906,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_UNUSED_TMPVA
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -34986,17 +35942,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -35052,6 +36003,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_UNUSED_TMPVAR
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_UNUSED & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -35062,7 +36014,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_UNUSED & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_UNUSED & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -35153,7 +36144,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_UNUSED_TMPVAR
 	zend_fetch_property_address(
 		result, container, IS_UNUSED, property, (IS_TMP_VAR|IS_VAR),
 		(((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -35170,7 +36161,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_UNUSED_TMPVA
 	container = &EX(This);
 	property = _get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_UNUSED, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_UNUSED, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -35217,6 +36208,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_UNUSED_TMPVA
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_UNUSED & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -35227,7 +36219,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -35316,7 +36316,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_TM
 	container = &EX(This);
 	property = _get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_UNUSED, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_UNUSED, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -35353,13 +36353,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -35371,8 +36373,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -35387,9 +36399,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -35413,13 +36422,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -35487,13 +36507,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -35505,8 +36527,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -35521,9 +36553,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -35547,13 +36576,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -35621,13 +36661,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -35639,8 +36681,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -35655,9 +36707,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -35681,13 +36730,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -35755,13 +36815,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -35773,8 +36835,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -35789,9 +36861,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -35815,13 +36884,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -36110,7 +37190,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_T
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 			zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 			if ((IS_UNUSED & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -36527,10 +37607,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_UNUSED_TMPVAR_HANDL
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -37070,10 +38146,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_UNUSED_UNUSED_HANDL
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -37280,6 +38352,46 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CALLABLE_CONVERT_SPEC_UNUSED_U
 	ZEND_VM_NEXT_OPCODE();
 }
 
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_0_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+
+#if 0 || 0
+	if (0 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_0 function = (zend_frameless_function_0)ZEND_FLF_HANDLER(opline);
+		function(EX_VAR(opline->result.var));
+	}
+	ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FRAMELESS_ICALL_0_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	SAVE_OPLINE();
+
+	zval *result = EX_VAR(opline->result.var);
+	ZVAL_NULL(result);
+
+#if 0 || 1
+	if (1 && UNEXPECTED(zend_observer_handler_is_unobserved(ZEND_OBSERVER_DATA(ZEND_FLF_FUNC(opline))) == false)) {
+		zend_frameless_observed_call(execute_data);
+	} else
+#endif
+	{
+		zend_frameless_function_0 function = (zend_frameless_function_0)ZEND_FLF_HANDLER(opline);
+		function(EX_VAR(opline->result.var));
+	}
+	ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+}
+
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -37287,6 +38399,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CV_H
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -37324,14 +38437,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -37344,12 +38456,8 @@ assign_op_object:
 						}
 					}
 
-					if (IS_CV == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -37383,6 +38491,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_UNUSED_CV_HAN
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -37418,18 +38527,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if (IS_CV == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -37450,6 +38555,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_UNUSED_CV_HA
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -37485,17 +38591,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if (IS_CV == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -37550,6 +38651,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_UNUSED_CV_HAN
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_UNUSED & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -37560,7 +38662,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_UNUSED & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_UNUSED & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -37651,7 +38792,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_UNUSED_CV_HAN
 	zend_fetch_property_address(
 		result, container, IS_UNUSED, property, IS_CV,
 		((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -37668,7 +38809,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CV_HA
 	container = &EX(This);
 	property = _get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -37715,6 +38856,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CV_HA
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_UNUSED & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -37725,7 +38867,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -37814,7 +38964,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CV
 	container = &EX(This);
 	property = _get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_UNUSED, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_UNUSED == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -37851,13 +39001,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -37869,8 +39021,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -37885,9 +39047,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -37911,13 +39070,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -37985,13 +39155,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -38003,8 +39175,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -38019,9 +39201,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -38045,13 +39224,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -38119,13 +39309,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -38137,8 +39329,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -38153,9 +39355,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -38179,13 +39378,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -38253,13 +39463,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -38271,8 +39483,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -38287,9 +39509,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -38313,13 +39532,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -38607,7 +39837,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CV == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if ((IS_UNUSED & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -39022,10 +40252,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_UNUSED_CV_HANDLER(Z
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -39838,9 +41064,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_CAST_SPEC_CV_HANDLER(ZEND_OPCO
 					} else {
 						ZVAL_EMPTY_ARRAY(result);
 					}
-				} else if (Z_OBJ_P(expr)->properties == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties_for == NULL
-				 && Z_OBJ_HT_P(expr)->get_properties == zend_std_get_properties) {
+				} else if (ZEND_STD_BUILD_OBJECT_PROPERTIES_ARRAY_COMPATIBLE(expr)) {
 					/* Optimized version without rebuilding properties HashTable */
 					ZVAL_ARR(result, zend_std_build_object_properties_array(Z_OBJ_P(expr)));
 				} else {
@@ -39984,6 +41208,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_R_SPEC_CV_HANDLER(ZEN
 	} else if (IS_CV != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		zend_object *zobj = Z_OBJ_P(array_ptr);
 		if (!zobj->ce->get_iterator) {
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+
+					HANDLE_EXCEPTION();
+				}
+			}
 			HashTable *properties = zobj->properties;
 			if (properties) {
 				if (UNEXPECTED(GC_REFCOUNT(properties) > 1)) {
@@ -40070,7 +41302,16 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_RW_SPEC_CV_HANDLER(ZE
 		ZEND_VM_NEXT_OPCODE();
 	} else if (IS_CV != IS_CONST && EXPECTED(Z_TYPE_P(array_ptr) == IS_OBJECT)) {
 		if (!Z_OBJCE_P(array_ptr)->get_iterator) {
+			zend_object *zobj = Z_OBJ_P(array_ptr);
 			HashTable *properties;
+			if (UNEXPECTED(zend_object_is_lazy(zobj))) {
+				zobj = zend_lazy_object_init(zobj);
+				if (UNEXPECTED(EG(exception))) {
+					UNDEF_RESULT();
+
+					HANDLE_EXCEPTION();
+				}
+			}
 			if (IS_CV == IS_VAR || IS_CV == IS_CV) {
 				if (array_ptr == array_ref) {
 					ZVAL_NEW_REF(array_ref, array_ref);
@@ -40382,10 +41623,6 @@ yield_from_try_again:
 	/* This generator has no send target (though the generator we delegate to might have one) */
 	generator->send_target = NULL;
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -40622,7 +41859,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_BIND_INIT_STATIC_OR_JMP_SPEC_C
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
 	value = (zval*)((char*)ht->arData + opline->extended_value);
-	if (Z_TYPE_EXTRA_P(value) & IS_STATIC_VAR_UNINITIALIZED) {
+	if (Z_TYPE_P(value) == IS_NULL) {
 		ZEND_VM_NEXT_OPCODE();
 	} else {
 		SAVE_OPLINE();
@@ -41317,6 +42554,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_CV_CONST_HA
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -41354,14 +42592,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -41374,12 +42611,8 @@ assign_op_object:
 						}
 					}
 
-					if (IS_CONST == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -41543,6 +42776,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_CV_CONST_HAND
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -41578,18 +42812,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if (IS_CONST == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -41610,6 +42840,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_CV_CONST_HAN
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -41645,17 +42876,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if (IS_CONST == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -41822,6 +43048,7 @@ static zend_always_inline ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CV & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -41832,7 +43059,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_CV & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_CV & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -41928,7 +43194,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_CV_CONST_HAND
 	zend_fetch_property_address(
 		result, container, IS_CV, property, IS_CONST,
 		((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -41945,7 +43211,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_CV_CONST_HAN
 	container = EX_VAR(opline->op1.var);
 	property = RT_CONSTANT(opline, opline->op2);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_CV, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_CV, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -41992,6 +43258,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_CV_CONST_HAN
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CV & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -42002,7 +43269,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -42091,7 +43366,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_CV_CONST_
 	container = EX_VAR(opline->op1.var);
 	property = RT_CONSTANT(opline, opline->op2);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_CV, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_CV, property, IS_CONST, ((IS_CONST == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -42128,13 +43403,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -42146,8 +43423,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -42162,9 +43449,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -42188,13 +43472,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -42262,13 +43557,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -42280,8 +43577,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -42296,9 +43603,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -42322,13 +43626,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -42396,13 +43711,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -42414,8 +43731,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -42430,9 +43757,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -42456,13 +43780,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -42530,13 +43865,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -42548,8 +43885,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -42564,9 +43911,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -42590,13 +43934,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(RT_CONSTANT(opline, opline->op2));
@@ -43600,7 +44955,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_S
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CONST == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if ((IS_CV & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -44210,7 +45565,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INSTANCEOF_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -44367,10 +45721,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CV_CONST_HANDLER(ZE
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -45158,6 +46508,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_CV_TMPVAR_H
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -45195,14 +46546,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -45215,12 +46565,8 @@ assign_op_object:
 						}
 					}
 
-					if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -45386,6 +46732,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_CV_TMPVAR_HAN
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -45421,18 +46768,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -45454,6 +46797,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_CV_TMPVAR_HA
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -45489,17 +46833,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = ((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if ((IS_TMP_VAR|IS_VAR) == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -45667,6 +47006,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_CV_TMPVAR_HAN
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CV & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -45677,7 +47017,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_CV & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_CV & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -45768,7 +47147,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_CV_TMPVAR_HAN
 	zend_fetch_property_address(
 		result, container, IS_CV, property, (IS_TMP_VAR|IS_VAR),
 		(((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -45785,7 +47164,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_CV_TMPVAR_HA
 	container = EX_VAR(opline->op1.var);
 	property = _get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_CV, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_CV, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -45832,6 +47211,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_CV_TMPVAR_HA
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CV & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -45842,7 +47222,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -45931,7 +47319,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_CV_TMPVAR
 	container = EX_VAR(opline->op1.var);
 	property = _get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_CV, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_CV, property, (IS_TMP_VAR|IS_VAR), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 	zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -45968,13 +47356,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -45986,8 +47376,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -46002,9 +47402,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -46028,13 +47425,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -46102,13 +47510,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -46120,8 +47530,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -46136,9 +47556,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -46162,13 +47579,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -46236,13 +47664,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -46254,8 +47684,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -46270,9 +47710,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -46296,13 +47733,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -46370,13 +47818,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -46388,8 +47838,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -46404,9 +47864,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -46430,13 +47887,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_var(opline->op2.var EXECUTE_DATA_CC));
@@ -47382,7 +48850,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVA
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), (((IS_TMP_VAR|IS_VAR) == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 			zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
 			if ((IS_CV & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -47854,7 +49322,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -47967,10 +49434,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CV_TMPVAR_HANDLER(Z
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -48389,8 +49852,8 @@ fetch_this:
 				/* Keep name alive in case an error handler tries to free it. */
 				zend_string_addref(name);
 			}
-			zend_error(E_WARNING, "Undefined %svariable $%s",
-				(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), ZSTR_VAL(name));
+			zend_error_unchecked(E_WARNING, "Undefined %svariable $%S",
+				(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), name);
 			if (type == BP_VAR_RW && !EG(exception)) {
 				retval = zend_hash_update(target_symbol_table, name, &EG(uninitialized_zval));
 			} else {
@@ -48412,8 +49875,8 @@ fetch_this:
 			} else if (type == BP_VAR_IS || type == BP_VAR_UNSET) {
 				retval = &EG(uninitialized_zval);
 			} else {
-				zend_error(E_WARNING, "Undefined %svariable $%s",
-					(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), ZSTR_VAL(name));
+				zend_error_unchecked(E_WARNING, "Undefined %svariable $%S",
+					(opline->extended_value & ZEND_FETCH_GLOBAL ? "global " : ""), name);
 				if (type == BP_VAR_RW && !EG(exception)) {
 					ZVAL_NULL(retval);
 				} else {
@@ -49629,8 +51092,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ISSET_ISEMPTY_VAR_SPEC_CV_UNUS
 {
 	USE_OPLINE
 	zval *value;
-	/* Should be bool result? as below got: result = (opline->extended_value & ZEND_ISEMPTY) */
-	int result;
+	bool result;
 	zval *varname;
 	zend_string *name, *tmp_name;
 	HashTable *target_symbol_table;
@@ -49666,7 +51128,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ISSET_ISEMPTY_VAR_SPEC_CV_UNUS
 		}
 	}
 
-	ZEND_VM_SMART_BRANCH(result, 1);
+	ZEND_VM_SMART_BRANCH(result, true);
 }
 
 /* No specialization for op_types (CONST|TMPVAR|CV, UNUSED|CLASS_FETCH|CONST|VAR) */
@@ -49826,10 +51288,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CV_UNUSED_HANDLER(Z
 	} else {
 		generator->send_target = NULL;
 	}
-
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
 
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
@@ -50555,6 +52013,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_ASSIGN_OBJ_OP_SPEC_CV_CV_HANDL
 	zval *property;
 	zval *value;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -50592,14 +52051,13 @@ assign_op_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR((opline+1)->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				zval *orig_zptr = zptr;
 				zend_reference *ref;
 
 				do {
@@ -50612,12 +52070,8 @@ assign_op_object:
 						}
 					}
 
-					if (IS_CV == IS_CONST) {
-						prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-					} else {
-						prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), orig_zptr);
-					}
-					if (UNEXPECTED(prop_info)) {
+					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
+					if (prop_info) {
 						/* special case for typed properties */
 						zend_binary_assign_op_typed_prop(prop_info, zptr, value OPLINE_CC EXECUTE_DATA_CC);
 					} else {
@@ -50781,6 +52235,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_PRE_INC_OBJ_SPEC_CV_CV_HANDLER
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -50816,18 +52271,14 @@ pre_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 					ZVAL_NULL(EX_VAR(opline->result.var));
 				}
 			} else {
-				if (IS_CV == IS_CONST) {
-					prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
+				prop_info = (zend_property_info *) CACHED_PTR_EX(cache_slot + 2);
 				zend_pre_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -50848,6 +52299,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_INC_OBJ_SPEC_CV_CV_HANDLE
 	zval *object;
 	zval *property;
 	zval *zptr;
+	void *_cache_slot[3] = {0};
 	void **cache_slot;
 	zend_property_info *prop_info;
 	zend_object *zobj;
@@ -50883,17 +52335,12 @@ post_incdec_object:
 				break;
 			}
 		}
-		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL;
+		cache_slot = (IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : _cache_slot;
 		if (EXPECTED((zptr = zobj->handlers->get_property_ptr_ptr(zobj, name, BP_VAR_RW, cache_slot)) != NULL)) {
 			if (UNEXPECTED(Z_ISERROR_P(zptr))) {
 				ZVAL_NULL(EX_VAR(opline->result.var));
 			} else {
-				if (IS_CV == IS_CONST) {
-					prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
-				} else {
-					prop_info = zend_object_fetch_property_type_info(Z_OBJ_P(object), zptr);
-				}
-
+				prop_info = (zend_property_info*)CACHED_PTR_EX(cache_slot + 2);
 				zend_post_incdec_property_zval(zptr, prop_info OPLINE_CC EXECUTE_DATA_CC);
 			}
 		} else {
@@ -51060,6 +52507,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_R_SPEC_CV_CV_HANDLER
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_r_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_INFO_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CV & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -51070,7 +52518,46 @@ fetch_obj_r_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						prop_offset = prop_info->offset;
+						goto fetch_obj_r_simple;
+					} else if (EXPECTED(ZEND_IS_PROPERTY_HOOK_SIMPLE_GET(prop_offset))) {
+						zend_function *hook = prop_info->hooks[ZEND_PROPERTY_HOOK_GET];
+						ZEND_ASSERT(hook->type == ZEND_USER_FUNCTION);
+						ZEND_ASSERT(RUN_TIME_CACHE(&hook->op_array));
+
+						uint32_t call_info = ZEND_CALL_NESTED_FUNCTION | ZEND_CALL_HAS_THIS;
+						if (IS_CV & IS_CV) {
+							GC_ADDREF(zobj);
+						}
+						if (IS_CV & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+							call_info |= ZEND_CALL_RELEASE_THIS;
+						}
+						zend_execute_data *call = zend_vm_stack_push_call_frame(call_info, hook, 0, zobj);
+						call->prev_execute_data = execute_data;
+						call->call = NULL;
+						call->return_value = EX_VAR(opline->result.var);
+						call->run_time_cache = RUN_TIME_CACHE(&hook->op_array);
+
+						execute_data = call;
+						EG(current_execute_data) = execute_data;
+						zend_init_cvs(0, hook->op_array.last_var EXECUTE_DATA_CC);
+
+#if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
+						opline = hook->op_array.opcodes;
+#else
+						EX(opline) = hook->op_array.opcodes;
+#endif
+						LOAD_OPLINE_EX();
+
+
+						ZEND_VM_ENTER_EX();
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -51161,7 +52648,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_W_SPEC_CV_CV_HANDLER
 	zend_fetch_property_address(
 		result, container, IS_CV, property, IS_CV,
 		((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS) : NULL),
-		BP_VAR_W, opline->extended_value OPLINE_CC EXECUTE_DATA_CC);
+		BP_VAR_W, opline->extended_value, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -51178,7 +52665,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_RW_SPEC_CV_CV_HANDLE
 	container = EX_VAR(opline->op1.var);
 	property = _get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_CV, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_CV, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_RW, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -51225,6 +52712,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_IS_SPEC_CV_CV_HANDLE
 				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+fetch_obj_is_simple:
 					retval = OBJ_PROP(zobj, prop_offset);
 					if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
 						if (0 || (IS_CV & (IS_TMP_VAR|IS_VAR)) != 0) {
@@ -51235,7 +52723,15 @@ fetch_obj_is_fast_copy:
 							ZEND_VM_NEXT_OPCODE();
 						}
 					}
+				} else if (UNEXPECTED(IS_HOOKED_PROPERTY_OFFSET(prop_offset))) {
+					if (ZEND_IS_PROPERTY_HOOK_SIMPLE_READ(prop_offset)) {
+						zend_property_info *prop_info = CACHED_PTR_EX(cache_slot + 2);
+						prop_offset = prop_info->offset;
+						goto fetch_obj_is_simple;
+					}
+					/* Fall through to read_property for hooks. */
 				} else if (EXPECTED(zobj->properties != NULL)) {
+					ZEND_ASSERT(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset));
 					name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
 						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
@@ -51324,7 +52820,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_OBJ_UNSET_SPEC_CV_CV_HAN
 	container = EX_VAR(opline->op1.var);
 	property = _get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC);
 	result = EX_VAR(opline->result.var);
-	zend_fetch_property_address(result, container, IS_CV, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0 OPLINE_CC EXECUTE_DATA_CC);
+	zend_fetch_property_address(result, container, IS_CV, property, IS_CV, ((IS_CV == IS_CONST) ? CACHE_ADDR(opline->extended_value) : NULL), BP_VAR_UNSET, 0, NULL OPLINE_CC EXECUTE_DATA_CC);
 
 	if (IS_CV == IS_VAR) {
 		FREE_VAR_PTR_AND_EXTRACT_RESULT_IF_NECESSARY(opline->op1.var);
@@ -51361,13 +52857,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -51379,8 +52877,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -51395,9 +52903,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CONST == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -51421,13 +52926,24 @@ fast_assign_obj:
 						} else if (IS_CONST == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -51495,13 +53011,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -51513,8 +53031,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -51529,9 +53057,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_TMP_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -51555,13 +53080,24 @@ fast_assign_obj:
 						} else if (IS_TMP_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -51629,13 +53165,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -51647,8 +53185,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -51663,9 +53211,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_VAR == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -51689,13 +53234,24 @@ fast_assign_obj:
 						} else if (IS_VAR == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -51763,13 +53319,15 @@ assign_object:
 			void **cache_slot = CACHE_ADDR(opline->extended_value);
 			uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 			zval *property_val;
+			zend_property_info *prop_info;
 
 			if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
+				prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
+
+assign_obj_simple:
 				property_val = OBJ_PROP(zobj, prop_offset);
 				if (Z_TYPE_P(property_val) != IS_UNDEF) {
-					zend_property_info *prop_info = (zend_property_info*) CACHED_PTR_EX(cache_slot + 2);
-
-					if (UNEXPECTED(prop_info != NULL)) {
+					if (prop_info != NULL) {
 						value = zend_assign_to_typed_prop(prop_info, property_val, value, &garbage EXECUTE_DATA_CC);
 						goto free_and_exit_assign_obj;
 					} else {
@@ -51781,8 +53339,18 @@ fast_assign_obj:
 						goto exit_assign_obj;
 					}
 				}
-			} else {
+			} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(prop_offset))) {
 				name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
+				if (UNEXPECTED(zend_lazy_object_must_init(zobj))) {
+					zobj = zend_lazy_object_init(zobj);
+					if (!zobj) {
+						value = &EG(uninitialized_zval);
+						goto free_and_exit_assign_obj;
+					}
+				}
+				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
+					rebuild_object_properties_internal(zobj);
+				}
 				if (EXPECTED(zobj->properties != NULL)) {
 					if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 						if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
@@ -51797,9 +53365,6 @@ fast_assign_obj:
 				}
 
 				if (!zobj->ce->__set && (zobj->ce->ce_flags & ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES)) {
-					if (EXPECTED(zobj->properties == NULL)) {
-						rebuild_object_properties(zobj);
-					}
 					if (IS_CV == IS_CONST) {
 						if (UNEXPECTED(Z_OPT_REFCOUNTED_P(value))) {
 							Z_ADDREF_P(value);
@@ -51823,13 +53388,24 @@ fast_assign_obj:
 						} else if (IS_CV == IS_CV) {
 							Z_TRY_ADDREF_P(value);
 						}
-						}
+					}
 					zend_hash_add_new(zobj->properties, name, value);
 					if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
 						ZVAL_COPY(EX_VAR(opline->result.var), value);
 					}
 					goto exit_assign_obj;
 				}
+			} else {
+				ZEND_ASSERT(IS_HOOKED_PROPERTY_OFFSET(prop_offset));
+				if (ZEND_IS_PROPERTY_HOOK_SIMPLE_WRITE(prop_offset)) {
+					prop_info = CACHED_PTR_EX(cache_slot + 2);
+					prop_offset = prop_info->offset;
+					if (!ZEND_TYPE_IS_SET(prop_info->type)) {
+						prop_info = NULL;
+					}
+					goto assign_obj_simple;
+				}
+				/* Fall through to write_property for hooks. */
 			}
 		}
 		name = Z_STR_P(_get_zval_ptr_cv_BP_VAR_R(opline->op2.var EXECUTE_DATA_CC));
@@ -52871,7 +54447,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CV_HA
 		fbc = obj->handlers->get_method(&obj, Z_STR_P(function_name), ((IS_CV == IS_CONST) ? (RT_CONSTANT(opline, opline->op2) + 1) : NULL));
 		if (UNEXPECTED(fbc == NULL)) {
 			if (EXPECTED(!EG(exception))) {
-				zend_undefined_method(obj->ce, Z_STR_P(function_name));
+				zend_undefined_method(orig_obj->ce, Z_STR_P(function_name));
 			}
 
 			if ((IS_CV & (IS_VAR|IS_TMP_VAR)) && GC_DELREF(orig_obj) == 0) {
@@ -53340,7 +54916,6 @@ array_key_exists_array:
 	ZEND_VM_SMART_BRANCH(result, 1);
 }
 
-/* No specialization for op_types (CONST|TMPVAR|UNUSED|CV, ANY) */
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -53453,10 +55028,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_YIELD_SPEC_CV_CV_HANDLER(ZEND_
 		generator->send_target = NULL;
 	}
 
-	/* We increment to the next op, so we are at the correct position when the
-	 * generator is resumed. */
-	ZEND_VM_INC_OPCODE();
-
 	/* The GOTO VM uses a local opline variable. We need to set the opline
 	 * variable in execute_data so we don't resume at an old position. */
 	SAVE_OPLINE();
@@ -53519,20 +55090,29 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_NULL_HANDLER(ZEND_OPCODE_HANDL
 # pragma GCC optimize("no-gcse")
 # pragma GCC optimize("no-ivopts")
 #endif
+#if defined(_WIN64) && defined(_M_X64)
+/* See save_xmm_x86_64_ms_masm.asm */
+void execute_ex_real(zend_execute_data *ex)
+#else
 ZEND_API void execute_ex(zend_execute_data *ex)
+#endif
 {
 	DCL_OPLINE
 
+#if defined(__GNUC__) && defined(__aarch64__)
+	__asm__ __volatile__ (""::: "v8","v9","v10","v11","v12","v13","v14","v15");
+#endif
+
 #if defined(ZEND_VM_IP_GLOBAL_REG) || defined(ZEND_VM_FP_GLOBAL_REG)
 	struct {
+#ifdef ZEND_VM_HYBRID_JIT_RED_ZONE_SIZE
+		char hybrid_jit_red_zone[ZEND_VM_HYBRID_JIT_RED_ZONE_SIZE];
+#endif
 #ifdef ZEND_VM_IP_GLOBAL_REG
 		const zend_op *orig_opline;
 #endif
 #ifdef ZEND_VM_FP_GLOBAL_REG
 		zend_execute_data *orig_execute_data;
-#ifdef ZEND_VM_HYBRID_JIT_RED_ZONE_SIZE
-		char hybrid_jit_red_zone[ZEND_VM_HYBRID_JIT_RED_ZONE_SIZE];
-#endif
 #endif
 	} vm_stack_data;
 #endif
@@ -55139,7 +56719,6 @@ ZEND_API void execute_ex(zend_execute_data *ex)
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_FE_RESET_R_SPEC_CV_LABEL,
 			(void*)&&ZEND_FE_FETCH_R_SPEC_VAR_LABEL,
-			(void*)&&ZEND_EXIT_SPEC_LABEL,
 			(void*)&&ZEND_FETCH_R_SPEC_CONST_UNUSED_LABEL,
 			(void*)&&ZEND_FETCH_R_SPEC_TMPVAR_UNUSED_LABEL,
 			(void*)&&ZEND_FETCH_R_SPEC_TMPVAR_UNUSED_LABEL,
@@ -56117,6 +57696,17 @@ ZEND_API void execute_ex(zend_execute_data *ex)
 			(void*)&&ZEND_VERIFY_NEVER_TYPE_SPEC_UNUSED_UNUSED_LABEL,
 			(void*)&&ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED_LABEL,
 			(void*)&&ZEND_BIND_INIT_STATIC_OR_JMP_SPEC_CV_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_0_SPEC_UNUSED_UNUSED_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_0_SPEC_OBSERVER_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_1_SPEC_UNUSED_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_1_SPEC_OBSERVER_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_2_SPEC_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_2_SPEC_OBSERVER_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_3_SPEC_LABEL,
+			(void*)&&ZEND_FRAMELESS_ICALL_3_SPEC_OBSERVER_LABEL,
+			(void*)&&ZEND_JMP_FRAMELESS_SPEC_CONST_LABEL,
+			(void*)&&ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED_LABEL,
+			(void*)&&ZEND_INIT_FCALL_OFFSET_SPEC_CONST_LABEL,
 			(void*)&&ZEND_RECV_NOTYPE_SPEC_LABEL,
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_COUNT_ARRAY_SPEC_TMPVAR_UNUSED_LABEL,
@@ -57072,58 +58662,72 @@ ZEND_API void execute_ex(zend_execute_data *ex)
 			HYBRID_CASE(ZEND_ASSIGN_STATIC_PROP_OP_SPEC):
 				VM_TRACE(ZEND_ASSIGN_STATIC_PROP_OP_SPEC)
 				ZEND_ASSIGN_STATIC_PROP_OP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_STATIC_PROP_OP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_STATIC_PROP_SPEC):
 				VM_TRACE(ZEND_PRE_INC_STATIC_PROP_SPEC)
 				ZEND_PRE_INC_STATIC_PROP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_STATIC_PROP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_STATIC_PROP_SPEC):
 				VM_TRACE(ZEND_POST_INC_STATIC_PROP_SPEC)
 				ZEND_POST_INC_STATIC_PROP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_STATIC_PROP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_STATIC_PROP_R_SPEC):
 				VM_TRACE(ZEND_FETCH_STATIC_PROP_R_SPEC)
 				ZEND_FETCH_STATIC_PROP_R_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_STATIC_PROP_R_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_STATIC_PROP_W_SPEC):
 				VM_TRACE(ZEND_FETCH_STATIC_PROP_W_SPEC)
 				ZEND_FETCH_STATIC_PROP_W_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_STATIC_PROP_W_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_STATIC_PROP_RW_SPEC):
 				VM_TRACE(ZEND_FETCH_STATIC_PROP_RW_SPEC)
 				ZEND_FETCH_STATIC_PROP_RW_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_STATIC_PROP_RW_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_STATIC_PROP_FUNC_ARG_SPEC):
 				VM_TRACE(ZEND_FETCH_STATIC_PROP_FUNC_ARG_SPEC)
 				ZEND_FETCH_STATIC_PROP_FUNC_ARG_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_STATIC_PROP_FUNC_ARG_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_STATIC_PROP_UNSET_SPEC):
 				VM_TRACE(ZEND_FETCH_STATIC_PROP_UNSET_SPEC)
 				ZEND_FETCH_STATIC_PROP_UNSET_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_STATIC_PROP_UNSET_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_STATIC_PROP_IS_SPEC):
 				VM_TRACE(ZEND_FETCH_STATIC_PROP_IS_SPEC)
 				ZEND_FETCH_STATIC_PROP_IS_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_STATIC_PROP_IS_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CONST)
 				ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_TMP)
 				ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_VAR)
 				ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CV)
 				ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_STATIC_PROP_SPEC_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_STATIC_PROP_REF_SPEC):
 				VM_TRACE(ZEND_ASSIGN_STATIC_PROP_REF_SPEC)
 				ZEND_ASSIGN_STATIC_PROP_REF_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_STATIC_PROP_REF_SPEC)
 				HYBRID_BREAK();
 zend_leave_helper_SPEC_LABEL:
 {
@@ -57267,222 +58871,307 @@ zend_leave_helper_SPEC_LABEL:
 			HYBRID_CASE(ZEND_JMP_SPEC):
 				VM_TRACE(ZEND_JMP_SPEC)
 				ZEND_JMP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_ICALL_SPEC_RETVAL_UNUSED):
 				VM_TRACE(ZEND_DO_ICALL_SPEC_RETVAL_UNUSED)
 				ZEND_DO_ICALL_SPEC_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_ICALL_SPEC_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_ICALL_SPEC_RETVAL_USED):
 				VM_TRACE(ZEND_DO_ICALL_SPEC_RETVAL_USED)
 				ZEND_DO_ICALL_SPEC_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_ICALL_SPEC_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_ICALL_SPEC_OBSERVER):
 				VM_TRACE(ZEND_DO_ICALL_SPEC_OBSERVER)
 				ZEND_DO_ICALL_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_ICALL_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_UCALL_SPEC_RETVAL_UNUSED):
 				VM_TRACE(ZEND_DO_UCALL_SPEC_RETVAL_UNUSED)
 				ZEND_DO_UCALL_SPEC_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_UCALL_SPEC_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_UCALL_SPEC_RETVAL_USED):
 				VM_TRACE(ZEND_DO_UCALL_SPEC_RETVAL_USED)
 				ZEND_DO_UCALL_SPEC_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_UCALL_SPEC_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_UCALL_SPEC_OBSERVER):
 				VM_TRACE(ZEND_DO_UCALL_SPEC_OBSERVER)
 				ZEND_DO_UCALL_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_UCALL_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_UNUSED):
 				VM_TRACE(ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_UNUSED)
 				ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_USED):
 				VM_TRACE(ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_USED)
 				ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_FCALL_BY_NAME_SPEC_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_FCALL_BY_NAME_SPEC_OBSERVER):
 				VM_TRACE(ZEND_DO_FCALL_BY_NAME_SPEC_OBSERVER)
 				ZEND_DO_FCALL_BY_NAME_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_FCALL_BY_NAME_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_FCALL_SPEC_RETVAL_UNUSED):
 				VM_TRACE(ZEND_DO_FCALL_SPEC_RETVAL_UNUSED)
 				ZEND_DO_FCALL_SPEC_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_FCALL_SPEC_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_FCALL_SPEC_RETVAL_USED):
 				VM_TRACE(ZEND_DO_FCALL_SPEC_RETVAL_USED)
 				ZEND_DO_FCALL_SPEC_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_FCALL_SPEC_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DO_FCALL_SPEC_OBSERVER):
 				VM_TRACE(ZEND_DO_FCALL_SPEC_OBSERVER)
 				ZEND_DO_FCALL_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DO_FCALL_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GENERATOR_CREATE_SPEC):
 				VM_TRACE(ZEND_GENERATOR_CREATE_SPEC)
 				ZEND_GENERATOR_CREATE_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GENERATOR_CREATE_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_UNPACK_SPEC):
 				VM_TRACE(ZEND_SEND_UNPACK_SPEC)
 				ZEND_SEND_UNPACK_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_UNPACK_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_ARRAY_SPEC):
 				VM_TRACE(ZEND_SEND_ARRAY_SPEC)
 				ZEND_SEND_ARRAY_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_ARRAY_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RECV_NOTYPE_SPEC):
 				VM_TRACE(ZEND_RECV_NOTYPE_SPEC)
 				ZEND_RECV_NOTYPE_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RECV_NOTYPE_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_UNPACK_SPEC):
 				VM_TRACE(ZEND_ADD_ARRAY_UNPACK_SPEC)
 				ZEND_ADD_ARRAY_UNPACK_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_UNPACK_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_STATIC_PROP_SPEC):
 				VM_TRACE(ZEND_UNSET_STATIC_PROP_SPEC)
 				ZEND_UNSET_STATIC_PROP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_STATIC_PROP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_STATIC_PROP_SPEC):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_STATIC_PROP_SPEC)
 				ZEND_ISSET_ISEMPTY_STATIC_PROP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
-				HYBRID_BREAK();
-			HYBRID_CASE(ZEND_EXIT_SPEC):
-				VM_TRACE(ZEND_EXIT_SPEC)
-				ZEND_EXIT_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_STATIC_PROP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BEGIN_SILENCE_SPEC):
 				VM_TRACE(ZEND_BEGIN_SILENCE_SPEC)
 				ZEND_BEGIN_SILENCE_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BEGIN_SILENCE_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_EXT_STMT_SPEC):
 				VM_TRACE(ZEND_EXT_STMT_SPEC)
 				ZEND_EXT_STMT_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_EXT_STMT_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_EXT_FCALL_BEGIN_SPEC):
 				VM_TRACE(ZEND_EXT_FCALL_BEGIN_SPEC)
 				ZEND_EXT_FCALL_BEGIN_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_EXT_FCALL_BEGIN_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_EXT_FCALL_END_SPEC):
 				VM_TRACE(ZEND_EXT_FCALL_END_SPEC)
 				ZEND_EXT_FCALL_END_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_EXT_FCALL_END_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DECLARE_ANON_CLASS_SPEC):
 				VM_TRACE(ZEND_DECLARE_ANON_CLASS_SPEC)
 				ZEND_DECLARE_ANON_CLASS_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DECLARE_ANON_CLASS_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DECLARE_FUNCTION_SPEC):
 				VM_TRACE(ZEND_DECLARE_FUNCTION_SPEC)
 				ZEND_DECLARE_FUNCTION_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DECLARE_FUNCTION_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_TICKS_SPEC):
 				VM_TRACE(ZEND_TICKS_SPEC)
 				ZEND_TICKS_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_TICKS_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_EXT_NOP_SPEC):
 				VM_TRACE(ZEND_EXT_NOP_SPEC)
 				ZEND_EXT_NOP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_EXT_NOP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_NOP_SPEC):
 				VM_TRACE(ZEND_NOP_SPEC)
 				ZEND_NOP_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_NOP_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_HANDLE_EXCEPTION_SPEC):
 				VM_TRACE(ZEND_HANDLE_EXCEPTION_SPEC)
 				ZEND_HANDLE_EXCEPTION_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_HANDLE_EXCEPTION_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_USER_OPCODE_SPEC):
 				VM_TRACE(ZEND_USER_OPCODE_SPEC)
 				ZEND_USER_OPCODE_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_USER_OPCODE_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DISCARD_EXCEPTION_SPEC):
 				VM_TRACE(ZEND_DISCARD_EXCEPTION_SPEC)
 				ZEND_DISCARD_EXCEPTION_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DISCARD_EXCEPTION_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CALL_SPEC):
 				VM_TRACE(ZEND_FAST_CALL_SPEC)
 				ZEND_FAST_CALL_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CALL_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_RET_SPEC):
 				VM_TRACE(ZEND_FAST_RET_SPEC)
 				ZEND_FAST_RET_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_RET_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSERT_CHECK_SPEC):
 				VM_TRACE(ZEND_ASSERT_CHECK_SPEC)
 				ZEND_ASSERT_CHECK_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSERT_CHECK_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CALL_TRAMPOLINE_SPEC):
 				VM_TRACE(ZEND_CALL_TRAMPOLINE_SPEC)
 				ZEND_CALL_TRAMPOLINE_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CALL_TRAMPOLINE_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CALL_TRAMPOLINE_SPEC_OBSERVER):
 				VM_TRACE(ZEND_CALL_TRAMPOLINE_SPEC_OBSERVER)
 				ZEND_CALL_TRAMPOLINE_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CALL_TRAMPOLINE_SPEC_OBSERVER)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_2_SPEC):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_2_SPEC)
+				ZEND_FRAMELESS_ICALL_2_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_2_SPEC)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_2_SPEC_OBSERVER):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_2_SPEC_OBSERVER)
+				ZEND_FRAMELESS_ICALL_2_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_2_SPEC_OBSERVER)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_3_SPEC):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_3_SPEC)
+				ZEND_FRAMELESS_ICALL_3_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_3_SPEC)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_3_SPEC_OBSERVER):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_3_SPEC_OBSERVER)
+				ZEND_FRAMELESS_ICALL_3_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_3_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_FORWARD_SPEC):
 				VM_TRACE(ZEND_JMP_FORWARD_SPEC)
 				ZEND_JMP_FORWARD_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_FORWARD_SPEC)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_FCALL_BY_NAME_SPEC_CONST):
 				VM_TRACE(ZEND_INIT_FCALL_BY_NAME_SPEC_CONST)
 				ZEND_INIT_FCALL_BY_NAME_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_FCALL_BY_NAME_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_DYNAMIC_CALL_SPEC_CONST):
 				VM_TRACE(ZEND_INIT_DYNAMIC_CALL_SPEC_CONST)
 				ZEND_INIT_DYNAMIC_CALL_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_DYNAMIC_CALL_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_NS_FCALL_BY_NAME_SPEC_CONST):
 				VM_TRACE(ZEND_INIT_NS_FCALL_BY_NAME_SPEC_CONST)
 				ZEND_INIT_NS_FCALL_BY_NAME_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_NS_FCALL_BY_NAME_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_FCALL_SPEC_CONST):
 				VM_TRACE(ZEND_INIT_FCALL_SPEC_CONST)
 				ZEND_INIT_FCALL_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_FCALL_SPEC_CONST)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_INIT_FCALL_OFFSET_SPEC_CONST):
+				VM_TRACE(ZEND_INIT_FCALL_OFFSET_SPEC_CONST)
+				ZEND_INIT_FCALL_OFFSET_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_FCALL_OFFSET_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RECV_INIT_SPEC_CONST):
 				VM_TRACE(ZEND_RECV_INIT_SPEC_CONST)
 				ZEND_RECV_INIT_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RECV_INIT_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_DYNAMIC_CALL_SPEC_TMPVAR):
 				VM_TRACE(ZEND_INIT_DYNAMIC_CALL_SPEC_TMPVAR)
 				ZEND_INIT_DYNAMIC_CALL_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_DYNAMIC_CALL_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RECV_SPEC_UNUSED):
 				VM_TRACE(ZEND_RECV_SPEC_UNUSED)
 				ZEND_RECV_SPEC_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RECV_SPEC_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RECV_VARIADIC_SPEC_UNUSED):
 				VM_TRACE(ZEND_RECV_VARIADIC_SPEC_UNUSED)
 				ZEND_RECV_VARIADIC_SPEC_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RECV_VARIADIC_SPEC_UNUSED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_1_SPEC_UNUSED):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_1_SPEC_UNUSED)
+				ZEND_FRAMELESS_ICALL_1_SPEC_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_1_SPEC_UNUSED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_1_SPEC_OBSERVER):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_1_SPEC_OBSERVER)
+				ZEND_FRAMELESS_ICALL_1_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_1_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_DYNAMIC_CALL_SPEC_CV):
 				VM_TRACE(ZEND_INIT_DYNAMIC_CALL_SPEC_CV)
 				ZEND_INIT_DYNAMIC_CALL_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_DYNAMIC_CALL_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_NOT_SPEC_CONST):
 				VM_TRACE(ZEND_BW_NOT_SPEC_CONST)
 				ZEND_BW_NOT_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_NOT_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_NOT_SPEC_CONST):
 				VM_TRACE(ZEND_BOOL_NOT_SPEC_CONST)
 				ZEND_BOOL_NOT_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_NOT_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ECHO_SPEC_CONST):
 				VM_TRACE(ZEND_ECHO_SPEC_CONST)
 				ZEND_ECHO_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ECHO_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPZ_SPEC_CONST):
 				VM_TRACE(ZEND_JMPZ_SPEC_CONST)
 				ZEND_JMPZ_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPZ_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPNZ_SPEC_CONST):
 				VM_TRACE(ZEND_JMPNZ_SPEC_CONST)
 				ZEND_JMPNZ_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPNZ_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPZ_EX_SPEC_CONST):
 				VM_TRACE(ZEND_JMPZ_EX_SPEC_CONST)
 				ZEND_JMPZ_EX_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPZ_EX_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPNZ_EX_SPEC_CONST):
 				VM_TRACE(ZEND_JMPNZ_EX_SPEC_CONST)
 				ZEND_JMPNZ_EX_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPNZ_EX_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RETURN_SPEC_CONST):
 				VM_TRACE(ZEND_RETURN_SPEC_CONST)
@@ -57562,6 +59251,7 @@ zend_leave_helper_SPEC_LABEL:
 	goto zend_leave_helper_SPEC_LABEL;
 }
 
+				VM_TRACE_OP_END(ZEND_RETURN_SPEC_CONST)
 			HYBRID_CASE(ZEND_RETURN_SPEC_OBSERVER):
 				VM_TRACE(ZEND_RETURN_SPEC_OBSERVER)
 {
@@ -57641,1465 +59331,1841 @@ zend_leave_helper_SPEC_LABEL:
 	goto zend_leave_helper_SPEC_LABEL;
 }
 
+				VM_TRACE_OP_END(ZEND_RETURN_SPEC_OBSERVER)
 			HYBRID_CASE(ZEND_RETURN_BY_REF_SPEC_CONST):
 				VM_TRACE(ZEND_RETURN_BY_REF_SPEC_CONST)
 				ZEND_RETURN_BY_REF_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RETURN_BY_REF_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RETURN_BY_REF_SPEC_OBSERVER):
 				VM_TRACE(ZEND_RETURN_BY_REF_SPEC_OBSERVER)
 				ZEND_RETURN_BY_REF_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RETURN_BY_REF_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GENERATOR_RETURN_SPEC_CONST):
 				VM_TRACE(ZEND_GENERATOR_RETURN_SPEC_CONST)
 				ZEND_GENERATOR_RETURN_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GENERATOR_RETURN_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GENERATOR_RETURN_SPEC_OBSERVER):
 				VM_TRACE(ZEND_GENERATOR_RETURN_SPEC_OBSERVER)
 				ZEND_GENERATOR_RETURN_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GENERATOR_RETURN_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_THROW_SPEC_CONST):
 				VM_TRACE(ZEND_THROW_SPEC_CONST)
 				ZEND_THROW_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_THROW_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CATCH_SPEC_CONST):
 				VM_TRACE(ZEND_CATCH_SPEC_CONST)
 				ZEND_CATCH_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CATCH_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_USER_SPEC_CONST):
 				VM_TRACE(ZEND_SEND_USER_SPEC_CONST)
 				ZEND_SEND_USER_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_USER_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_SPEC_CONST):
 				VM_TRACE(ZEND_BOOL_SPEC_CONST)
 				ZEND_BOOL_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CLONE_SPEC_CONST):
 				VM_TRACE(ZEND_CLONE_SPEC_CONST)
 				ZEND_CLONE_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CLONE_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CAST_SPEC_CONST):
 				VM_TRACE(ZEND_CAST_SPEC_CONST)
 				ZEND_CAST_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CAST_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INCLUDE_OR_EVAL_SPEC_CONST):
 				VM_TRACE(ZEND_INCLUDE_OR_EVAL_SPEC_CONST)
 				ZEND_INCLUDE_OR_EVAL_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INCLUDE_OR_EVAL_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INCLUDE_OR_EVAL_SPEC_OBSERVER):
 				VM_TRACE(ZEND_INCLUDE_OR_EVAL_SPEC_OBSERVER)
 				ZEND_INCLUDE_OR_EVAL_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INCLUDE_OR_EVAL_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_R_SPEC_CONST):
 				VM_TRACE(ZEND_FE_RESET_R_SPEC_CONST)
 				ZEND_FE_RESET_R_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_R_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_RW_SPEC_CONST):
 				VM_TRACE(ZEND_FE_RESET_RW_SPEC_CONST)
 				ZEND_FE_RESET_RW_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_RW_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_SET_SPEC_CONST):
 				VM_TRACE(ZEND_JMP_SET_SPEC_CONST)
 				ZEND_JMP_SET_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_SET_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COALESCE_SPEC_CONST):
 				VM_TRACE(ZEND_COALESCE_SPEC_CONST)
 				ZEND_COALESCE_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COALESCE_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_NULL_SPEC_CONST):
 				VM_TRACE(ZEND_JMP_NULL_SPEC_CONST)
 				ZEND_JMP_NULL_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_NULL_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_SPEC_CONST):
 				VM_TRACE(ZEND_QM_ASSIGN_SPEC_CONST)
 				ZEND_QM_ASSIGN_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DECLARE_CLASS_SPEC_CONST):
 				VM_TRACE(ZEND_DECLARE_CLASS_SPEC_CONST)
 				ZEND_DECLARE_CLASS_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DECLARE_CLASS_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DECLARE_LAMBDA_FUNCTION_SPEC_CONST):
 				VM_TRACE(ZEND_DECLARE_LAMBDA_FUNCTION_SPEC_CONST)
 				ZEND_DECLARE_LAMBDA_FUNCTION_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DECLARE_LAMBDA_FUNCTION_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_FROM_SPEC_CONST):
 				VM_TRACE(ZEND_YIELD_FROM_SPEC_CONST)
 				ZEND_YIELD_FROM_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_FROM_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_STRLEN_SPEC_CONST):
 				VM_TRACE(ZEND_STRLEN_SPEC_CONST)
 				ZEND_STRLEN_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_STRLEN_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_TYPE_CHECK_SPEC_CONST):
 				VM_TRACE(ZEND_TYPE_CHECK_SPEC_CONST)
 				ZEND_TYPE_CHECK_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_TYPE_CHECK_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DEFINED_SPEC_CONST):
 				VM_TRACE(ZEND_DEFINED_SPEC_CONST)
 				ZEND_DEFINED_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DEFINED_SPEC_CONST)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_JMP_FRAMELESS_SPEC_CONST):
+				VM_TRACE(ZEND_JMP_FRAMELESS_SPEC_CONST)
+				ZEND_JMP_FRAMELESS_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_FRAMELESS_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_LONG_SPEC_CONST):
 				VM_TRACE(ZEND_QM_ASSIGN_LONG_SPEC_CONST)
 				ZEND_QM_ASSIGN_LONG_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_LONG_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_DOUBLE_SPEC_CONST):
 				VM_TRACE(ZEND_QM_ASSIGN_DOUBLE_SPEC_CONST)
 				ZEND_QM_ASSIGN_DOUBLE_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_DOUBLE_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_NOREF_SPEC_CONST):
 				VM_TRACE(ZEND_QM_ASSIGN_NOREF_SPEC_CONST)
 				ZEND_QM_ASSIGN_NOREF_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_NOREF_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_SIMPLE_SPEC_CONST):
 				VM_TRACE(ZEND_SEND_VAL_SIMPLE_SPEC_CONST)
 				ZEND_SEND_VAL_SIMPLE_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_SIMPLE_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_EX_SIMPLE_SPEC_CONST):
 				VM_TRACE(ZEND_SEND_VAL_EX_SIMPLE_SPEC_CONST)
 				ZEND_SEND_VAL_EX_SIMPLE_SPEC_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_EX_SIMPLE_SPEC_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_ADD_SPEC_CONST_CONST)
 				ZEND_ADD_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SUB_SPEC_CONST_CONST)
 				ZEND_SUB_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_MUL_SPEC_CONST_CONST)
 				ZEND_MUL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_DIV_SPEC_CONST_CONST)
 				ZEND_DIV_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MOD_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_MOD_SPEC_CONST_CONST)
 				ZEND_MOD_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MOD_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SL_SPEC_CONST_CONST)
 				ZEND_SL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SR_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SR_SPEC_CONST_CONST)
 				ZEND_SR_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SR_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_POW_SPEC_CONST_CONST)
 				ZEND_POW_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_CONST_CONST)
 				ZEND_IS_IDENTICAL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_CONST_CONST)
 				ZEND_IS_NOT_IDENTICAL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CONST_CONST)
 				ZEND_IS_EQUAL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CONST_CONST)
 				ZEND_IS_NOT_EQUAL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_CONST_CONST)
 				ZEND_IS_SMALLER_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_CONST)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_CONST_CONST)
 				ZEND_SPACESHIP_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_OR_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_BW_OR_SPEC_CONST_CONST)
 				ZEND_BW_OR_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_OR_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_AND_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_BW_AND_SPEC_CONST_CONST)
 				ZEND_BW_AND_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_AND_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_XOR_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_BW_XOR_SPEC_CONST_CONST)
 				ZEND_BW_XOR_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_XOR_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_XOR_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_BOOL_XOR_SPEC_CONST_CONST)
 				ZEND_BOOL_XOR_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_XOR_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_CONST_CONST)
 				ZEND_FETCH_DIM_R_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_CONST_CONST)
 				ZEND_FETCH_DIM_IS_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CONST)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_CONST_CONST)
 				ZEND_FETCH_OBJ_R_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_CONST_CONST)
 				ZEND_FETCH_OBJ_IS_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CONST)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_R_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_LIST_R_SPEC_CONST_CONST)
 				ZEND_FETCH_LIST_R_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_R_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_CONST_CONST)
 				ZEND_FAST_CONCAT_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_CONST_CONST)
 				ZEND_INIT_METHOD_CALL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CONST)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_USER_CALL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_INIT_USER_CALL_SPEC_CONST_CONST)
 				ZEND_INIT_USER_CALL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_USER_CALL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SEND_VAL_SPEC_CONST_CONST)
 				ZEND_SEND_VAL_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_EX_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SEND_VAL_EX_SPEC_CONST_CONST)
 				ZEND_SEND_VAL_EX_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_EX_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_CONST)
 				ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CONST)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CONST_CONST)
 				ZEND_INIT_ARRAY_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CONST)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CONST)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CONST)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DECLARE_CLASS_DELAYED_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_DECLARE_CLASS_DELAYED_SPEC_CONST_CONST)
 				ZEND_DECLARE_CLASS_DELAYED_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DECLARE_CLASS_DELAYED_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DECLARE_CONST_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_DECLARE_CONST_SPEC_CONST_CONST)
 				ZEND_DECLARE_CONST_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DECLARE_CONST_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_YIELD_SPEC_CONST_CONST)
 				ZEND_YIELD_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SWITCH_LONG_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SWITCH_LONG_SPEC_CONST_CONST)
 				ZEND_SWITCH_LONG_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SWITCH_LONG_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SWITCH_STRING_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_SWITCH_STRING_SPEC_CONST_CONST)
 				ZEND_SWITCH_STRING_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SWITCH_STRING_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MATCH_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_MATCH_SPEC_CONST_CONST)
 				ZEND_MATCH_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MATCH_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IN_ARRAY_SPEC_CONST_CONST):
 				VM_TRACE(ZEND_IN_ARRAY_SPEC_CONST_CONST)
 				ZEND_IN_ARRAY_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IN_ARRAY_SPEC_CONST_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_ADD_SPEC_CONST_TMPVARCV)
 				ZEND_ADD_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_SUB_SPEC_CONST_TMPVARCV)
 				ZEND_SUB_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MOD_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_MOD_SPEC_CONST_TMPVARCV)
 				ZEND_MOD_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MOD_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SL_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_SL_SPEC_CONST_TMPVARCV)
 				ZEND_SL_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SL_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SR_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_SR_SPEC_CONST_TMPVARCV)
 				ZEND_SR_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SR_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV)
 				ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_CONST_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_CONST_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_TMPVARCV)
 				ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_CONSTANT_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_CONST_TMPVARCV)
 				ZEND_SUB_LONG_NO_OVERFLOW_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_LONG_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_SUB_LONG_SPEC_CONST_TMPVARCV)
 				ZEND_SUB_LONG_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_LONG_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_DOUBLE_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_SUB_DOUBLE_SPEC_CONST_TMPVARCV)
 				ZEND_SUB_DOUBLE_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_DOUBLE_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV)
 				ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_CONST_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_CONST_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_CONST_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_INDEX_SPEC_CONST_TMPVARCV):
 				VM_TRACE(ZEND_FETCH_DIM_R_INDEX_SPEC_CONST_TMPVARCV)
 				ZEND_FETCH_DIM_R_INDEX_SPEC_CONST_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_INDEX_SPEC_CONST_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_DIV_SPEC_CONST_TMPVAR)
 				ZEND_DIV_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_POW_SPEC_CONST_TMPVAR)
 				ZEND_POW_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_CONCAT_SPEC_CONST_TMPVAR)
 				ZEND_CONCAT_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_CONST_TMPVAR)
 				ZEND_SPACESHIP_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_CONST_TMPVAR)
 				ZEND_FETCH_DIM_R_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_CONST_TMPVAR)
 				ZEND_FETCH_DIM_IS_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_TMPVAR)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_CONST_TMPVAR)
 				ZEND_FETCH_OBJ_R_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_CONST_TMPVAR)
 				ZEND_FETCH_OBJ_IS_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_TMPVAR)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_R_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FETCH_LIST_R_SPEC_CONST_TMPVAR)
 				ZEND_FETCH_LIST_R_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_R_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_CONST_TMPVAR)
 				ZEND_FAST_CONCAT_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_CONST_TMPVAR)
 				ZEND_INIT_METHOD_CALL_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_TMPVAR)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_USER_CALL_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_INIT_USER_CALL_SPEC_CONST_TMPVAR)
 				ZEND_INIT_USER_CALL_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_USER_CALL_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_TMPVAR)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CONST_TMPVAR)
 				ZEND_INIT_ARRAY_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_TMPVAR)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_TMPVAR)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_TMPVAR)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CONST_TMPVAR):
 				VM_TRACE(ZEND_YIELD_SPEC_CONST_TMPVAR)
 				ZEND_YIELD_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CONST_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_R_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FETCH_R_SPEC_CONST_UNUSED)
 				ZEND_FETCH_R_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_R_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_W_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FETCH_W_SPEC_CONST_UNUSED)
 				ZEND_FETCH_W_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_W_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_RW_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FETCH_RW_SPEC_CONST_UNUSED)
 				ZEND_FETCH_RW_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_RW_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_FUNC_ARG_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FETCH_FUNC_ARG_SPEC_CONST_UNUSED)
 				ZEND_FETCH_FUNC_ARG_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_FUNC_ARG_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_UNSET_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FETCH_UNSET_SPEC_CONST_UNUSED)
 				ZEND_FETCH_UNSET_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_UNSET_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_IS_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FETCH_IS_SPEC_CONST_UNUSED)
 				ZEND_FETCH_IS_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_IS_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_UNUSED)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_UNUSED)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_VERIFY_RETURN_TYPE_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_VERIFY_RETURN_TYPE_SPEC_CONST_UNUSED)
 				ZEND_VERIFY_RETURN_TYPE_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_VERIFY_RETURN_TYPE_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_SEND_VAL_SPEC_CONST_UNUSED)
 				ZEND_SEND_VAL_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED)
 				ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED_QUICK):
 				VM_TRACE(ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED_QUICK)
 				ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED_QUICK_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_EX_SPEC_CONST_UNUSED_QUICK)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_NEW_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_NEW_SPEC_CONST_UNUSED)
 				ZEND_NEW_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_NEW_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_UNUSED)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CONST_UNUSED)
 				ZEND_INIT_ARRAY_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_VAR_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_UNSET_VAR_SPEC_CONST_UNUSED)
 				ZEND_UNSET_VAR_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_VAR_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_VAR_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_VAR_SPEC_CONST_UNUSED)
 				ZEND_ISSET_ISEMPTY_VAR_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_VAR_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_YIELD_SPEC_CONST_UNUSED)
 				ZEND_YIELD_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MATCH_ERROR_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_MATCH_ERROR_SPEC_CONST_UNUSED)
 				ZEND_MATCH_ERROR_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MATCH_ERROR_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COUNT_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_COUNT_SPEC_CONST_UNUSED)
 				ZEND_COUNT_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COUNT_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_CLASS_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_GET_CLASS_SPEC_CONST_UNUSED)
 				ZEND_GET_CLASS_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_CLASS_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_TYPE_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_GET_TYPE_SPEC_CONST_UNUSED)
 				ZEND_GET_TYPE_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_TYPE_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED)
 				ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED):
+				VM_TRACE(ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED)
+				ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_CONST_CV):
 				VM_TRACE(ZEND_DIV_SPEC_CONST_CV)
 				ZEND_DIV_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_CONST_CV):
 				VM_TRACE(ZEND_POW_SPEC_CONST_CV)
 				ZEND_POW_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_CONST_CV):
 				VM_TRACE(ZEND_CONCAT_SPEC_CONST_CV)
 				ZEND_CONCAT_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_CONST_CV):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_CONST_CV)
 				ZEND_SPACESHIP_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_CONST_CV)
 				ZEND_FETCH_DIM_R_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_CONST_CV)
 				ZEND_FETCH_DIM_IS_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CV)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_CONST_CV)
 				ZEND_FETCH_OBJ_R_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_CONST_CV)
 				ZEND_FETCH_OBJ_IS_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CV)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_R_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FETCH_LIST_R_SPEC_CONST_CV)
 				ZEND_FETCH_LIST_R_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_R_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_CONST_CV):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_CONST_CV)
 				ZEND_FAST_CONCAT_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_CONST_CV):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_CONST_CV)
 				ZEND_INIT_METHOD_CALL_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CV):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CV)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_USER_CALL_SPEC_CONST_CV):
 				VM_TRACE(ZEND_INIT_USER_CALL_SPEC_CONST_CV)
 				ZEND_INIT_USER_CALL_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_USER_CALL_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CV):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CV)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CONST_CV):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CONST_CV)
 				ZEND_INIT_ARRAY_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CV):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CV)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CV):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CV)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CV):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CV)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CONST_CV):
 				VM_TRACE(ZEND_YIELD_SPEC_CONST_CV)
 				ZEND_YIELD_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CONST_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_NOT_SPEC_TMPVARCV):
 				VM_TRACE(ZEND_BW_NOT_SPEC_TMPVARCV)
 				ZEND_BW_NOT_SPEC_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_NOT_SPEC_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_LONG_SPEC_TMPVARCV):
 				VM_TRACE(ZEND_QM_ASSIGN_LONG_SPEC_TMPVARCV)
 				ZEND_QM_ASSIGN_LONG_SPEC_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_LONG_SPEC_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_DOUBLE_SPEC_TMPVARCV):
 				VM_TRACE(ZEND_QM_ASSIGN_DOUBLE_SPEC_TMPVARCV)
 				ZEND_QM_ASSIGN_DOUBLE_SPEC_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_DOUBLE_SPEC_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_NOREF_SPEC_TMPVARCV):
 				VM_TRACE(ZEND_QM_ASSIGN_NOREF_SPEC_TMPVARCV)
 				ZEND_QM_ASSIGN_NOREF_SPEC_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_NOREF_SPEC_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_ADD_SPEC_TMPVARCV_CONST)
 				ZEND_ADD_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SUB_SPEC_TMPVARCV_CONST)
 				ZEND_SUB_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_MUL_SPEC_TMPVARCV_CONST)
 				ZEND_MUL_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MOD_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_MOD_SPEC_TMPVARCV_CONST)
 				ZEND_MOD_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MOD_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SL_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SL_SPEC_TMPVARCV_CONST)
 				ZEND_SL_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SL_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SR_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SR_SPEC_TMPVARCV_CONST)
 				ZEND_SR_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SR_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST)
 				ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_OR_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_BW_OR_SPEC_TMPVARCV_CONST)
 				ZEND_BW_OR_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_OR_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_AND_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_BW_AND_SPEC_TMPVARCV_CONST)
 				ZEND_BW_AND_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_AND_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_XOR_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_BW_XOR_SPEC_TMPVARCV_CONST)
 				ZEND_BW_XOR_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_XOR_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CONST)
 				ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SWITCH_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SWITCH_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_SWITCH_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SWITCH_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SWITCH_STRING_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SWITCH_STRING_SPEC_TMPVARCV_CONST)
 				ZEND_SWITCH_STRING_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SWITCH_STRING_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MATCH_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_MATCH_SPEC_TMPVARCV_CONST)
 				ZEND_MATCH_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MATCH_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST)
 				ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_ADD_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_ADD_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_DOUBLE_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_ADD_DOUBLE_SPEC_TMPVARCV_CONST)
 				ZEND_ADD_DOUBLE_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_DOUBLE_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST)
 				ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SUB_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_SUB_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_DOUBLE_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_SUB_DOUBLE_SPEC_TMPVARCV_CONST)
 				ZEND_SUB_DOUBLE_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_DOUBLE_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST)
 				ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_MUL_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_MUL_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_DOUBLE_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_MUL_DOUBLE_SPEC_TMPVARCV_CONST)
 				ZEND_MUL_DOUBLE_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_DOUBLE_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST)
 				ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST)
 				ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_ADD_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_ADD_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_SUB_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_SUB_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_MUL_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_MUL_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MOD_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_MOD_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_MOD_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MOD_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SL_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_SL_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_SL_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SL_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SR_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_SR_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_SR_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SR_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_OR_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_BW_OR_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_BW_OR_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_OR_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_AND_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_BW_AND_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_BW_AND_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_AND_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BW_XOR_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_BW_XOR_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_BW_XOR_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BW_XOR_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_LONG_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_ADD_LONG_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_ADD_LONG_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_LONG_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_DOUBLE_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_ADD_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_ADD_DOUBLE_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_LONG_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_SUB_LONG_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_SUB_LONG_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_LONG_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SUB_DOUBLE_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_SUB_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_SUB_DOUBLE_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SUB_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_LONG_NO_OVERFLOW_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_LONG_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_MUL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_MUL_LONG_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MUL_DOUBLE_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_MUL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_MUL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MUL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_LONG_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ):
 				VM_TRACE(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_SMALLER_OR_EQUAL_DOUBLE_SPEC_TMPVARCV_TMPVARCV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_TMPVAR)
 				ZEND_FETCH_LIST_R_SPEC_TMPVARCV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MATCH_ERROR_SPEC_TMPVARCV_UNUSED):
 				VM_TRACE(ZEND_MATCH_ERROR_SPEC_TMPVARCV_UNUSED)
 				ZEND_MATCH_ERROR_SPEC_TMPVARCV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MATCH_ERROR_SPEC_TMPVARCV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CV):
 				VM_TRACE(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CV)
 				ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_R_SPEC_TMPVARCV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_NOT_SPEC_TMPVAR):
 				VM_TRACE(ZEND_BOOL_NOT_SPEC_TMPVAR)
 				ZEND_BOOL_NOT_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_NOT_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ECHO_SPEC_TMPVAR):
 				VM_TRACE(ZEND_ECHO_SPEC_TMPVAR)
 				ZEND_ECHO_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ECHO_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPZ_SPEC_TMPVAR):
 				VM_TRACE(ZEND_JMPZ_SPEC_TMPVAR)
 				ZEND_JMPZ_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPZ_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPNZ_SPEC_TMPVAR):
 				VM_TRACE(ZEND_JMPNZ_SPEC_TMPVAR)
 				ZEND_JMPNZ_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPNZ_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPZ_EX_SPEC_TMPVAR):
 				VM_TRACE(ZEND_JMPZ_EX_SPEC_TMPVAR)
 				ZEND_JMPZ_EX_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPZ_EX_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPNZ_EX_SPEC_TMPVAR):
 				VM_TRACE(ZEND_JMPNZ_EX_SPEC_TMPVAR)
 				ZEND_JMPNZ_EX_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPNZ_EX_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FREE_SPEC_TMPVAR):
 				VM_TRACE(ZEND_FREE_SPEC_TMPVAR)
 				ZEND_FREE_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FREE_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_FREE_SPEC_TMPVAR):
 				VM_TRACE(ZEND_FE_FREE_SPEC_TMPVAR)
 				ZEND_FE_FREE_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_FREE_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_THROW_SPEC_TMPVAR):
 				VM_TRACE(ZEND_THROW_SPEC_TMPVAR)
 				ZEND_THROW_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_THROW_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_SPEC_TMPVAR):
 				VM_TRACE(ZEND_BOOL_SPEC_TMPVAR)
 				ZEND_BOOL_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CLONE_SPEC_TMPVAR):
 				VM_TRACE(ZEND_CLONE_SPEC_TMPVAR)
 				ZEND_CLONE_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CLONE_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INCLUDE_OR_EVAL_SPEC_TMPVAR):
 				VM_TRACE(ZEND_INCLUDE_OR_EVAL_SPEC_TMPVAR)
 				ZEND_INCLUDE_OR_EVAL_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INCLUDE_OR_EVAL_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_FROM_SPEC_TMPVAR):
 				VM_TRACE(ZEND_YIELD_FROM_SPEC_TMPVAR)
 				ZEND_YIELD_FROM_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_FROM_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_STRLEN_SPEC_TMPVAR):
 				VM_TRACE(ZEND_STRLEN_SPEC_TMPVAR)
 				ZEND_STRLEN_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_STRLEN_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_TYPE_CHECK_SPEC_TMPVAR):
 				VM_TRACE(ZEND_TYPE_CHECK_SPEC_TMPVAR)
 				ZEND_TYPE_CHECK_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_TYPE_CHECK_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_NAME_SPEC_TMPVAR):
 				VM_TRACE(ZEND_FETCH_CLASS_NAME_SPEC_TMPVAR)
 				ZEND_FETCH_CLASS_NAME_SPEC_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_NAME_SPEC_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_DIV_SPEC_TMPVAR_CONST)
 				ZEND_DIV_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_POW_SPEC_TMPVAR_CONST)
 				ZEND_POW_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_CONCAT_SPEC_TMPVAR_CONST)
 				ZEND_CONCAT_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST)
 				ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPZ)
 				ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPNZ)
 				ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_TMPVAR_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST)
 				ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPZ)
 				ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPNZ)
 				ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_TMPVAR_CONST)
 				ZEND_SPACESHIP_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_XOR_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_BOOL_XOR_SPEC_TMPVAR_CONST)
 				ZEND_BOOL_XOR_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_XOR_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_TMPVAR_CONST)
 				ZEND_FETCH_DIM_R_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CONST)
 				ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CONST)
 				ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CONST)
 				ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_TMPVAR_CONST)
 				ZEND_FAST_CONCAT_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CONST)
 				ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_SEND_VAL_SPEC_TMPVAR_CONST)
 				ZEND_SEND_VAL_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_CASE_SPEC_TMPVAR_CONST)
 				ZEND_CASE_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CONST)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CONST)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CONST)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INSTANCEOF_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_INSTANCEOF_SPEC_TMPVAR_CONST)
 				ZEND_INSTANCEOF_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INSTANCEOF_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_CONST)
 				ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_TMPVARCV):
 				VM_TRACE(ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_TMPVARCV)
 				ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_INDEX_SPEC_TMPVAR_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_DIV_SPEC_TMPVAR_TMPVAR)
 				ZEND_DIV_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_POW_SPEC_TMPVAR_TMPVAR)
 				ZEND_POW_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_CONCAT_SPEC_TMPVAR_TMPVAR)
 				ZEND_CONCAT_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR)
 				ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ)
 				ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ)
 				ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR)
 				ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ)
 				ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ)
 				ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_TMPVAR_TMPVAR_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_TMPVAR_TMPVAR)
 				ZEND_SPACESHIP_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_XOR_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_BOOL_XOR_SPEC_TMPVAR_TMPVAR)
 				ZEND_BOOL_XOR_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_XOR_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_TMPVAR_TMPVAR)
 				ZEND_FETCH_DIM_R_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_TMPVAR)
 				ZEND_FETCH_DIM_IS_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_TMPVAR)
 				ZEND_FETCH_OBJ_R_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_TMPVAR)
 				ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_TMPVAR_TMPVAR)
 				ZEND_FAST_CONCAT_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_TMPVAR)
 				ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_CASE_SPEC_TMPVAR_TMPVAR)
 				ZEND_CASE_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_TMPVAR)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_TMPVAR)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_TMPVAR):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_TMPVAR)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INSTANCEOF_SPEC_TMPVAR_VAR):
 				VM_TRACE(ZEND_INSTANCEOF_SPEC_TMPVAR_VAR)
 				ZEND_INSTANCEOF_SPEC_TMPVAR_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INSTANCEOF_SPEC_TMPVAR_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_R_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_R_SPEC_TMPVAR_UNUSED)
 				ZEND_FETCH_R_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_R_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_W_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_W_SPEC_TMPVAR_UNUSED)
 				ZEND_FETCH_W_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_W_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_RW_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_RW_SPEC_TMPVAR_UNUSED)
 				ZEND_FETCH_RW_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_RW_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_FUNC_ARG_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_FUNC_ARG_SPEC_TMPVAR_UNUSED)
 				ZEND_FETCH_FUNC_ARG_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_FUNC_ARG_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_UNSET_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_UNSET_SPEC_TMPVAR_UNUSED)
 				ZEND_FETCH_UNSET_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_UNSET_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_IS_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_IS_SPEC_TMPVAR_UNUSED)
 				ZEND_FETCH_IS_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_IS_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_SEND_VAL_SPEC_TMPVAR_UNUSED)
 				ZEND_SEND_VAL_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_VAR_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_UNSET_VAR_SPEC_TMPVAR_UNUSED)
 				ZEND_UNSET_VAR_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_VAR_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_VAR_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_VAR_SPEC_TMPVAR_UNUSED)
 				ZEND_ISSET_ISEMPTY_VAR_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_VAR_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INSTANCEOF_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_INSTANCEOF_SPEC_TMPVAR_UNUSED)
 				ZEND_INSTANCEOF_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INSTANCEOF_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COUNT_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_COUNT_SPEC_TMPVAR_UNUSED)
 				ZEND_COUNT_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COUNT_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COUNT_ARRAY_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_COUNT_ARRAY_SPEC_TMPVAR_UNUSED)
 				ZEND_COUNT_ARRAY_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COUNT_ARRAY_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_CLASS_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_GET_CLASS_SPEC_TMPVAR_UNUSED)
 				ZEND_GET_CLASS_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_CLASS_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COPY_TMP_SPEC_TMPVAR_UNUSED):
 				VM_TRACE(ZEND_COPY_TMP_SPEC_TMPVAR_UNUSED)
 				ZEND_COPY_TMP_SPEC_TMPVAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COPY_TMP_SPEC_TMPVAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_DIV_SPEC_TMPVAR_CV)
 				ZEND_DIV_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_POW_SPEC_TMPVAR_CV)
 				ZEND_POW_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_CONCAT_SPEC_TMPVAR_CV)
 				ZEND_CONCAT_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_TMPVAR_CV)
 				ZEND_SPACESHIP_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_TMPVAR_CV)
 				ZEND_FETCH_DIM_R_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CV)
 				ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CV)
 				ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CV)
 				ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_TMPVAR_CV)
 				ZEND_FAST_CONCAT_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CV)
 				ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_CASE_SPEC_TMPVAR_CV)
 				ZEND_CASE_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CV)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CV)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CV):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CV)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_TMPVAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RETURN_SPEC_TMP):
 				VM_TRACE(ZEND_RETURN_SPEC_TMP)
@@ -59179,233 +61245,291 @@ zend_leave_helper_SPEC_LABEL:
 	goto zend_leave_helper_SPEC_LABEL;
 }
 
+				VM_TRACE_OP_END(ZEND_RETURN_SPEC_TMP)
 			HYBRID_CASE(ZEND_RETURN_BY_REF_SPEC_TMP):
 				VM_TRACE(ZEND_RETURN_BY_REF_SPEC_TMP)
 				ZEND_RETURN_BY_REF_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RETURN_BY_REF_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GENERATOR_RETURN_SPEC_TMP):
 				VM_TRACE(ZEND_GENERATOR_RETURN_SPEC_TMP)
 				ZEND_GENERATOR_RETURN_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GENERATOR_RETURN_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_USER_SPEC_TMP):
 				VM_TRACE(ZEND_SEND_USER_SPEC_TMP)
 				ZEND_SEND_USER_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_USER_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CAST_SPEC_TMP):
 				VM_TRACE(ZEND_CAST_SPEC_TMP)
 				ZEND_CAST_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CAST_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_R_SPEC_TMP):
 				VM_TRACE(ZEND_FE_RESET_R_SPEC_TMP)
 				ZEND_FE_RESET_R_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_R_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_RW_SPEC_TMP):
 				VM_TRACE(ZEND_FE_RESET_RW_SPEC_TMP)
 				ZEND_FE_RESET_RW_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_RW_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_END_SILENCE_SPEC_TMP):
 				VM_TRACE(ZEND_END_SILENCE_SPEC_TMP)
 				ZEND_END_SILENCE_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_END_SILENCE_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_SET_SPEC_TMP):
 				VM_TRACE(ZEND_JMP_SET_SPEC_TMP)
 				ZEND_JMP_SET_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_SET_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COALESCE_SPEC_TMP):
 				VM_TRACE(ZEND_COALESCE_SPEC_TMP)
 				ZEND_COALESCE_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COALESCE_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_NULL_SPEC_TMP):
 				VM_TRACE(ZEND_JMP_NULL_SPEC_TMP)
 				ZEND_JMP_NULL_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_NULL_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_SPEC_TMP):
 				VM_TRACE(ZEND_QM_ASSIGN_SPEC_TMP)
 				ZEND_QM_ASSIGN_SPEC_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_SPEC_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_TMP_CONST)
 				ZEND_IS_IDENTICAL_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_TMP_CONST)
 				ZEND_CASE_STRICT_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_TMP_CONST)
 				ZEND_IS_NOT_IDENTICAL_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CONST)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CONST)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_ADD_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_ROPE_ADD_SPEC_TMP_CONST)
 				ZEND_ROPE_ADD_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_ADD_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_END_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_ROPE_END_SPEC_TMP_CONST)
 				ZEND_ROPE_END_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_END_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_EX_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_SEND_VAL_EX_SPEC_TMP_CONST)
 				ZEND_SEND_VAL_EX_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_EX_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CONST)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_TMP_CONST)
 				ZEND_INIT_ARRAY_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_YIELD_SPEC_TMP_CONST)
 				ZEND_YIELD_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IN_ARRAY_SPEC_TMP_CONST):
 				VM_TRACE(ZEND_IN_ARRAY_SPEC_TMP_CONST)
 				ZEND_IN_ARRAY_SPEC_TMP_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IN_ARRAY_SPEC_TMP_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_TMPVAR)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_TMPVAR)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_ADD_SPEC_TMP_TMPVAR):
 				VM_TRACE(ZEND_ROPE_ADD_SPEC_TMP_TMPVAR)
 				ZEND_ROPE_ADD_SPEC_TMP_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_ADD_SPEC_TMP_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_END_SPEC_TMP_TMPVAR):
 				VM_TRACE(ZEND_ROPE_END_SPEC_TMP_TMPVAR)
 				ZEND_ROPE_END_SPEC_TMP_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_END_SPEC_TMP_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_TMPVAR):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_TMPVAR)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_TMP_TMPVAR):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_TMP_TMPVAR)
 				ZEND_INIT_ARRAY_SPEC_TMP_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_TMP_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_TMP_TMPVAR):
 				VM_TRACE(ZEND_YIELD_SPEC_TMP_TMPVAR)
 				ZEND_YIELD_SPEC_TMP_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_TMP_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_TMP_TMP):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_TMP_TMP)
 				ZEND_IS_IDENTICAL_SPEC_TMP_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_TMP_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_TMP_TMP):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_TMP_TMP)
 				ZEND_CASE_STRICT_SPEC_TMP_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_TMP_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_TMP_TMP):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_TMP_TMP)
 				ZEND_IS_NOT_IDENTICAL_SPEC_TMP_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_TMP_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_TMP_VAR):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_TMP_VAR)
 				ZEND_CASE_STRICT_SPEC_TMP_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_TMP_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_UNUSED)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_VERIFY_RETURN_TYPE_SPEC_TMP_UNUSED):
 				VM_TRACE(ZEND_VERIFY_RETURN_TYPE_SPEC_TMP_UNUSED)
 				ZEND_VERIFY_RETURN_TYPE_SPEC_TMP_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_VERIFY_RETURN_TYPE_SPEC_TMP_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED):
 				VM_TRACE(ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED)
 				ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED_QUICK):
 				VM_TRACE(ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED_QUICK)
 				ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED_QUICK_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAL_EX_SPEC_TMP_UNUSED_QUICK)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_UNUSED):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_UNUSED)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_TMP_UNUSED):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_TMP_UNUSED)
 				ZEND_INIT_ARRAY_SPEC_TMP_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_TMP_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_TMP_UNUSED):
 				VM_TRACE(ZEND_YIELD_SPEC_TMP_UNUSED)
 				ZEND_YIELD_SPEC_TMP_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_TMP_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_TYPE_SPEC_TMP_UNUSED):
 				VM_TRACE(ZEND_GET_TYPE_SPEC_TMP_UNUSED)
 				ZEND_GET_TYPE_SPEC_TMP_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_TYPE_SPEC_TMP_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_TMP_CV):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_TMP_CV)
 				ZEND_CASE_STRICT_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CV):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CV)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CV)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_ADD_SPEC_TMP_CV):
 				VM_TRACE(ZEND_ROPE_ADD_SPEC_TMP_CV)
 				ZEND_ROPE_ADD_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_ADD_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_END_SPEC_TMP_CV):
 				VM_TRACE(ZEND_ROPE_END_SPEC_TMP_CV)
 				ZEND_ROPE_END_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_END_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CV):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CV)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_TMP_CV):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_TMP_CV)
 				ZEND_INIT_ARRAY_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_TMP_CV):
 				VM_TRACE(ZEND_YIELD_SPEC_TMP_CV)
 				ZEND_YIELD_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BIND_LEXICAL_SPEC_TMP_CV):
 				VM_TRACE(ZEND_BIND_LEXICAL_SPEC_TMP_CV)
 				ZEND_BIND_LEXICAL_SPEC_TMP_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BIND_LEXICAL_SPEC_TMP_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_SPEC_VAR_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_INC_SPEC_VAR_RETVAL_UNUSED)
 				ZEND_PRE_INC_SPEC_VAR_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_SPEC_VAR_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_SPEC_VAR_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_INC_SPEC_VAR_RETVAL_USED)
 				ZEND_PRE_INC_SPEC_VAR_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_SPEC_VAR_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_SPEC_VAR_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_DEC_SPEC_VAR_RETVAL_UNUSED)
 				ZEND_PRE_DEC_SPEC_VAR_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_SPEC_VAR_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_SPEC_VAR_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_DEC_SPEC_VAR_RETVAL_USED)
 				ZEND_PRE_DEC_SPEC_VAR_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_SPEC_VAR_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_SPEC_VAR):
 				VM_TRACE(ZEND_POST_INC_SPEC_VAR)
 				ZEND_POST_INC_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_DEC_SPEC_VAR):
 				VM_TRACE(ZEND_POST_DEC_SPEC_VAR)
 				ZEND_POST_DEC_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_DEC_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RETURN_SPEC_VAR):
 				VM_TRACE(ZEND_RETURN_SPEC_VAR)
@@ -59485,1065 +61609,1341 @@ zend_leave_helper_SPEC_LABEL:
 	goto zend_leave_helper_SPEC_LABEL;
 }
 
+				VM_TRACE_OP_END(ZEND_RETURN_SPEC_VAR)
 			HYBRID_CASE(ZEND_RETURN_BY_REF_SPEC_VAR):
 				VM_TRACE(ZEND_RETURN_BY_REF_SPEC_VAR)
 				ZEND_RETURN_BY_REF_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RETURN_BY_REF_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GENERATOR_RETURN_SPEC_VAR):
 				VM_TRACE(ZEND_GENERATOR_RETURN_SPEC_VAR)
 				ZEND_GENERATOR_RETURN_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GENERATOR_RETURN_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_USER_SPEC_VAR):
 				VM_TRACE(ZEND_SEND_USER_SPEC_VAR)
 				ZEND_SEND_USER_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_USER_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CAST_SPEC_VAR):
 				VM_TRACE(ZEND_CAST_SPEC_VAR)
 				ZEND_CAST_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CAST_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_R_SPEC_VAR):
 				VM_TRACE(ZEND_FE_RESET_R_SPEC_VAR)
 				ZEND_FE_RESET_R_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_R_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_RW_SPEC_VAR):
 				VM_TRACE(ZEND_FE_RESET_RW_SPEC_VAR)
 				ZEND_FE_RESET_RW_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_RW_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_FETCH_R_SPEC_VAR):
 				VM_TRACE(ZEND_FE_FETCH_R_SPEC_VAR)
 				ZEND_FE_FETCH_R_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_FETCH_R_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_FETCH_RW_SPEC_VAR):
 				VM_TRACE(ZEND_FE_FETCH_RW_SPEC_VAR)
 				ZEND_FE_FETCH_RW_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_FETCH_RW_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_SET_SPEC_VAR):
 				VM_TRACE(ZEND_JMP_SET_SPEC_VAR)
 				ZEND_JMP_SET_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_SET_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COALESCE_SPEC_VAR):
 				VM_TRACE(ZEND_COALESCE_SPEC_VAR)
 				ZEND_COALESCE_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COALESCE_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_NULL_SPEC_VAR):
 				VM_TRACE(ZEND_JMP_NULL_SPEC_VAR)
 				ZEND_JMP_NULL_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_NULL_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_SPEC_VAR):
 				VM_TRACE(ZEND_QM_ASSIGN_SPEC_VAR)
 				ZEND_QM_ASSIGN_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_SIMPLE_SPEC_VAR):
 				VM_TRACE(ZEND_SEND_VAR_SIMPLE_SPEC_VAR)
 				ZEND_SEND_VAR_SIMPLE_SPEC_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_SIMPLE_SPEC_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_VAR_CONST)
 				ZEND_IS_IDENTICAL_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_VAR_CONST)
 				ZEND_CASE_STRICT_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_CONST)
 				ZEND_IS_NOT_IDENTICAL_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CONST)
 				ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_CONST)
 				ZEND_ASSIGN_DIM_OP_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OP_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_ASSIGN_OP_SPEC_VAR_CONST)
 				ZEND_ASSIGN_OP_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OP_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_VAR_CONST)
 				ZEND_PRE_INC_OBJ_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_VAR_CONST)
 				ZEND_POST_INC_OBJ_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_VAR_CONST)
 				ZEND_FETCH_DIM_W_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_VAR_CONST)
 				ZEND_FETCH_DIM_RW_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CONST)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_UNSET_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_UNSET_SPEC_VAR_CONST)
 				ZEND_FETCH_DIM_UNSET_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_UNSET_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_VAR_CONST)
 				ZEND_FETCH_OBJ_W_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_VAR_CONST)
 				ZEND_FETCH_OBJ_RW_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CONST)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CONST)
 				ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_W_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_LIST_W_SPEC_VAR_CONST)
 				ZEND_FETCH_LIST_W_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_W_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_CONST_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CONST)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_SEND_VAR_SPEC_VAR_CONST)
 				ZEND_SEND_VAR_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_NO_REF_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_SEND_VAR_NO_REF_SPEC_VAR_CONST)
 				ZEND_SEND_VAR_NO_REF_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_NO_REF_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_CONST)
 				ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_REF_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_SEND_REF_SPEC_VAR_CONST)
 				ZEND_SEND_REF_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_REF_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_SEND_VAR_EX_SPEC_VAR_CONST)
 				ZEND_SEND_VAR_EX_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_FUNC_ARG_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_SEND_FUNC_ARG_SPEC_VAR_CONST)
 				ZEND_SEND_FUNC_ARG_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_FUNC_ARG_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_CONST)
 				ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CONST)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_VAR_CONST)
 				ZEND_INIT_ARRAY_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_DIM_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_UNSET_DIM_SPEC_VAR_CONST)
 				ZEND_UNSET_DIM_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_DIM_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_VAR_CONST)
 				ZEND_UNSET_OBJ_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_YIELD_SPEC_VAR_CONST)
 				ZEND_YIELD_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IN_ARRAY_SPEC_VAR_CONST):
 				VM_TRACE(ZEND_IN_ARRAY_SPEC_VAR_CONST)
 				ZEND_IN_ARRAY_SPEC_VAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IN_ARRAY_SPEC_VAR_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_TMPVARCV):
 				VM_TRACE(ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_TMPVARCV)
 				ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_CONSTANT_SPEC_VAR_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_TMPVAR)
 				ZEND_ASSIGN_OBJ_OP_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_TMPVAR)
 				ZEND_ASSIGN_DIM_OP_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OP_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_ASSIGN_OP_SPEC_VAR_TMPVAR)
 				ZEND_ASSIGN_OP_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OP_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_VAR_TMPVAR)
 				ZEND_PRE_INC_OBJ_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_VAR_TMPVAR)
 				ZEND_POST_INC_OBJ_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_DIM_W_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_DIM_RW_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_UNSET_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_UNSET_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_DIM_UNSET_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_UNSET_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_OBJ_W_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_OBJ_RW_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_OBJ_UNSET_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_W_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_FETCH_LIST_W_SPEC_VAR_TMPVAR)
 				ZEND_FETCH_LIST_W_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_W_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_TMPVAR)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_TMPVAR)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_VAR_TMPVAR)
 				ZEND_INIT_ARRAY_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_DIM_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_UNSET_DIM_SPEC_VAR_TMPVAR)
 				ZEND_UNSET_DIM_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_DIM_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_VAR_TMPVAR)
 				ZEND_UNSET_OBJ_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_VAR_TMPVAR):
 				VM_TRACE(ZEND_YIELD_SPEC_VAR_TMPVAR)
 				ZEND_YIELD_SPEC_VAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_VAR_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_VAR_TMP):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_VAR_TMP)
 				ZEND_IS_IDENTICAL_SPEC_VAR_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_VAR_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_VAR_TMP):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_VAR_TMP)
 				ZEND_CASE_STRICT_SPEC_VAR_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_VAR_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_TMP):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_TMP)
 				ZEND_IS_NOT_IDENTICAL_SPEC_VAR_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_TMP_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_VAR_VAR):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_VAR_VAR)
 				ZEND_IS_IDENTICAL_SPEC_VAR_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_VAR_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_VAR_VAR):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_VAR_VAR)
 				ZEND_CASE_STRICT_SPEC_VAR_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_VAR_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_VAR):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_VAR)
 				ZEND_IS_NOT_IDENTICAL_SPEC_VAR_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_VAR_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_VAR_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_REF_SPEC_VAR_VAR):
 				VM_TRACE(ZEND_ASSIGN_REF_SPEC_VAR_VAR)
 				ZEND_ASSIGN_REF_SPEC_VAR_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_REF_SPEC_VAR_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_UNUSED)
 				ZEND_ASSIGN_DIM_OP_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_VAR_UNUSED)
 				ZEND_FETCH_DIM_W_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_VAR_UNUSED)
 				ZEND_FETCH_DIM_RW_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_UNUSED)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_UNUSED_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_UNUSED)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_VERIFY_RETURN_TYPE_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_VERIFY_RETURN_TYPE_SPEC_VAR_UNUSED)
 				ZEND_VERIFY_RETURN_TYPE_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_VERIFY_RETURN_TYPE_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_SPEC_VAR_UNUSED)
 				ZEND_SEND_VAR_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_NO_REF_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_NO_REF_SPEC_VAR_UNUSED)
 				ZEND_SEND_VAR_NO_REF_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_NO_REF_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED)
 				ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED_QUICK):
 				VM_TRACE(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED_QUICK)
 				ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED_QUICK_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_NO_REF_EX_SPEC_VAR_UNUSED_QUICK)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_REF_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEND_REF_SPEC_VAR_UNUSED)
 				ZEND_SEND_REF_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_REF_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED)
 				ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED_QUICK):
 				VM_TRACE(ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED_QUICK)
 				ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED_QUICK_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SPEC_VAR_UNUSED_QUICK)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_FUNC_ARG_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEND_FUNC_ARG_SPEC_VAR_UNUSED)
 				ZEND_SEND_FUNC_ARG_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_FUNC_ARG_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_NEW_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_NEW_SPEC_VAR_UNUSED)
 				ZEND_NEW_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_NEW_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_UNUSED)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_VAR_UNUSED)
 				ZEND_INIT_ARRAY_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEPARATE_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEPARATE_SPEC_VAR_UNUSED)
 				ZEND_SEPARATE_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEPARATE_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_YIELD_SPEC_VAR_UNUSED)
 				ZEND_YIELD_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MAKE_REF_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_MAKE_REF_SPEC_VAR_UNUSED)
 				ZEND_MAKE_REF_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MAKE_REF_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_TYPE_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_GET_TYPE_SPEC_VAR_UNUSED)
 				ZEND_GET_TYPE_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_TYPE_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SIMPLE_SPEC_VAR_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_EX_SIMPLE_SPEC_VAR_UNUSED)
 				ZEND_SEND_VAR_EX_SIMPLE_SPEC_VAR_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SIMPLE_SPEC_VAR_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CASE_STRICT_SPEC_VAR_CV):
 				VM_TRACE(ZEND_CASE_STRICT_SPEC_VAR_CV)
 				ZEND_CASE_STRICT_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CASE_STRICT_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CV)
 				ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_VAR_CV)
 				ZEND_ASSIGN_DIM_OP_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OP_SPEC_VAR_CV):
 				VM_TRACE(ZEND_ASSIGN_OP_SPEC_VAR_CV)
 				ZEND_ASSIGN_OP_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OP_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_VAR_CV):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_VAR_CV)
 				ZEND_PRE_INC_OBJ_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_VAR_CV):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_VAR_CV)
 				ZEND_POST_INC_OBJ_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_VAR_CV)
 				ZEND_FETCH_DIM_W_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_VAR_CV)
 				ZEND_FETCH_DIM_RW_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CV)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_UNSET_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_DIM_UNSET_SPEC_VAR_CV)
 				ZEND_FETCH_DIM_UNSET_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_UNSET_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_VAR_CV)
 				ZEND_FETCH_OBJ_W_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_VAR_CV)
 				ZEND_FETCH_OBJ_RW_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CV)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CV)
 				ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_LIST_W_SPEC_VAR_CV):
 				VM_TRACE(ZEND_FETCH_LIST_W_SPEC_VAR_CV)
 				ZEND_FETCH_LIST_W_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_LIST_W_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_VAR_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_VAR_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_VAR_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_REF_SPEC_VAR_CV):
 				VM_TRACE(ZEND_ASSIGN_REF_SPEC_VAR_CV)
 				ZEND_ASSIGN_REF_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_REF_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_VAR_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CV):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CV)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CV):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CV)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_VAR_CV):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_VAR_CV)
 				ZEND_INIT_ARRAY_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_DIM_SPEC_VAR_CV):
 				VM_TRACE(ZEND_UNSET_DIM_SPEC_VAR_CV)
 				ZEND_UNSET_DIM_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_DIM_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_VAR_CV):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_VAR_CV)
 				ZEND_UNSET_OBJ_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_VAR_CV):
 				VM_TRACE(ZEND_YIELD_SPEC_VAR_CV)
 				ZEND_YIELD_SPEC_VAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_VAR_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_UNUSED)
 				ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_USED):
 				VM_TRACE(ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_USED)
 				ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_FETCH_R_SIMPLE_SPEC_VAR_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CLONE_SPEC_UNUSED):
 				VM_TRACE(ZEND_CLONE_SPEC_UNUSED)
 				ZEND_CLONE_SPEC_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CLONE_SPEC_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_NAME_SPEC_UNUSED):
 				VM_TRACE(ZEND_FETCH_CLASS_NAME_SPEC_UNUSED)
 				ZEND_FETCH_CLASS_NAME_SPEC_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_NAME_SPEC_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CONST)
 				ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_UNUSED_CONST)
 				ZEND_PRE_INC_OBJ_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_UNUSED_CONST)
 				ZEND_POST_INC_OBJ_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_UNUSED_CONST)
 				ZEND_FETCH_OBJ_R_SPEC_UNUSED_CONST_INLINE_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_UNUSED_CONST)
 				ZEND_FETCH_OBJ_W_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CONST)
 				ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CONST)
 				ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CONST)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CONST)
 				ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_INIT_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_ROPE_INIT_SPEC_UNUSED_CONST)
 				ZEND_ROPE_INIT_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_INIT_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_CLASS_SPEC_UNUSED_CONST)
 				ZEND_FETCH_CLASS_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CONST)
 				ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CONST)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_CONST)
 				ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CONSTANT_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_CONSTANT_SPEC_UNUSED_CONST)
 				ZEND_FETCH_CONSTANT_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CONSTANT_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_CONST)
 				ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_UNUSED_CONST)
 				ZEND_INIT_ARRAY_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_UNUSED_CONST)
 				ZEND_UNSET_OBJ_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CONST)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_UNUSED_CONST):
 				VM_TRACE(ZEND_YIELD_SPEC_UNUSED_CONST)
 				ZEND_YIELD_SPEC_UNUSED_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_UNUSED_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_TMPVARCV):
 				VM_TRACE(ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_TMPVARCV)
 				ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_CONSTANT_SPEC_UNUSED_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_TMPVAR)
 				ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_UNUSED_TMPVAR)
 				ZEND_PRE_INC_OBJ_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_UNUSED_TMPVAR)
 				ZEND_POST_INC_OBJ_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_UNUSED_TMPVAR)
 				ZEND_FETCH_OBJ_R_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_UNUSED_TMPVAR)
 				ZEND_FETCH_OBJ_W_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_TMPVAR)
 				ZEND_FETCH_OBJ_RW_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_TMPVAR)
 				ZEND_FETCH_OBJ_IS_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_TMPVAR)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_TMPVAR)
 				ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_INIT_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_ROPE_INIT_SPEC_UNUSED_TMPVAR)
 				ZEND_ROPE_INIT_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_INIT_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_FETCH_CLASS_SPEC_UNUSED_TMPVAR)
 				ZEND_FETCH_CLASS_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_TMPVAR)
 				ZEND_INIT_METHOD_CALL_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_TMPVAR)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_UNUSED_TMPVAR)
 				ZEND_INIT_ARRAY_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_UNUSED_TMPVAR)
 				ZEND_UNSET_OBJ_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_TMPVAR)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_UNUSED_TMPVAR):
 				VM_TRACE(ZEND_YIELD_SPEC_UNUSED_TMPVAR)
 				ZEND_YIELD_SPEC_UNUSED_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_UNUSED_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_FETCH_CLASS_SPEC_UNUSED_UNUSED)
 				ZEND_FETCH_CLASS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_UNUSED)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_VERIFY_RETURN_TYPE_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_VERIFY_RETURN_TYPE_SPEC_UNUSED_UNUSED)
 				ZEND_VERIFY_RETURN_TYPE_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_VERIFY_RETURN_TYPE_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_VERIFY_NEVER_TYPE_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_VERIFY_NEVER_TYPE_SPEC_UNUSED_UNUSED)
 				ZEND_VERIFY_NEVER_TYPE_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_VERIFY_NEVER_TYPE_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED)
 				ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED_QUICK):
 				VM_TRACE(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED_QUICK)
 				ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED_QUICK_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CHECK_FUNC_ARG_SPEC_UNUSED_UNUSED_QUICK)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CHECK_UNDEF_ARGS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_CHECK_UNDEF_ARGS_SPEC_UNUSED_UNUSED)
 				ZEND_CHECK_UNDEF_ARGS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CHECK_UNDEF_ARGS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_NEW_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_NEW_SPEC_UNUSED_UNUSED)
 				ZEND_NEW_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_NEW_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_UNUSED_UNUSED)
 				ZEND_INIT_ARRAY_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_YIELD_SPEC_UNUSED_UNUSED)
 				ZEND_YIELD_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_THIS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_FETCH_THIS_SPEC_UNUSED_UNUSED)
 				ZEND_FETCH_THIS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_THIS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_GLOBALS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_FETCH_GLOBALS_SPEC_UNUSED_UNUSED)
 				ZEND_FETCH_GLOBALS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_GLOBALS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_THIS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_THIS_SPEC_UNUSED_UNUSED)
 				ZEND_ISSET_ISEMPTY_THIS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_THIS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_CLASS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_GET_CLASS_SPEC_UNUSED_UNUSED)
 				ZEND_GET_CLASS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_CLASS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_CALLED_CLASS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_GET_CALLED_CLASS_SPEC_UNUSED_UNUSED)
 				ZEND_GET_CALLED_CLASS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_CALLED_CLASS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FUNC_NUM_ARGS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_FUNC_NUM_ARGS_SPEC_UNUSED_UNUSED)
 				ZEND_FUNC_NUM_ARGS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FUNC_NUM_ARGS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED)
 				ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED)
 				ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_0_SPEC_UNUSED_UNUSED):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_0_SPEC_UNUSED_UNUSED)
+				ZEND_FRAMELESS_ICALL_0_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_0_SPEC_UNUSED_UNUSED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FRAMELESS_ICALL_0_SPEC_OBSERVER):
+				VM_TRACE(ZEND_FRAMELESS_ICALL_0_SPEC_OBSERVER)
+				ZEND_FRAMELESS_ICALL_0_SPEC_OBSERVER_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FRAMELESS_ICALL_0_SPEC_OBSERVER)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CV)
 				ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_UNUSED_CV)
 				ZEND_PRE_INC_OBJ_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_UNUSED_CV)
 				ZEND_POST_INC_OBJ_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_UNUSED_CV)
 				ZEND_FETCH_OBJ_R_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_UNUSED_CV)
 				ZEND_FETCH_OBJ_W_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CV)
 				ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CV)
 				ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CV)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CV)
 				ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_UNUSED_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_UNUSED_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ROPE_INIT_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_ROPE_INIT_SPEC_UNUSED_CV)
 				ZEND_ROPE_INIT_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ROPE_INIT_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_FETCH_CLASS_SPEC_UNUSED_CV)
 				ZEND_FETCH_CLASS_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CV)
 				ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CV)
 				ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_STATIC_METHOD_CALL_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_UNUSED_CV)
 				ZEND_INIT_ARRAY_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_UNUSED_CV)
 				ZEND_UNSET_OBJ_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CV)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_UNUSED_CV):
 				VM_TRACE(ZEND_YIELD_SPEC_UNUSED_CV)
 				ZEND_YIELD_SPEC_UNUSED_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_UNUSED_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_NOT_SPEC_CV):
 				VM_TRACE(ZEND_BOOL_NOT_SPEC_CV)
 				ZEND_BOOL_NOT_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_NOT_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_SPEC_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_INC_SPEC_CV_RETVAL_UNUSED)
 				ZEND_PRE_INC_SPEC_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_SPEC_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_SPEC_CV_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_INC_SPEC_CV_RETVAL_USED)
 				ZEND_PRE_INC_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_SPEC_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_SPEC_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_DEC_SPEC_CV_RETVAL_UNUSED)
 				ZEND_PRE_DEC_SPEC_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_SPEC_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_SPEC_CV_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_DEC_SPEC_CV_RETVAL_USED)
 				ZEND_PRE_DEC_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_SPEC_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_SPEC_CV):
 				VM_TRACE(ZEND_POST_INC_SPEC_CV)
 				ZEND_POST_INC_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_DEC_SPEC_CV):
 				VM_TRACE(ZEND_POST_DEC_SPEC_CV)
 				ZEND_POST_DEC_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_DEC_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ECHO_SPEC_CV):
 				VM_TRACE(ZEND_ECHO_SPEC_CV)
 				ZEND_ECHO_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ECHO_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPZ_SPEC_CV):
 				VM_TRACE(ZEND_JMPZ_SPEC_CV)
 				ZEND_JMPZ_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPZ_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPNZ_SPEC_CV):
 				VM_TRACE(ZEND_JMPNZ_SPEC_CV)
 				ZEND_JMPNZ_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPNZ_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPZ_EX_SPEC_CV):
 				VM_TRACE(ZEND_JMPZ_EX_SPEC_CV)
 				ZEND_JMPZ_EX_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPZ_EX_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMPNZ_EX_SPEC_CV):
 				VM_TRACE(ZEND_JMPNZ_EX_SPEC_CV)
 				ZEND_JMPNZ_EX_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMPNZ_EX_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_RETURN_SPEC_CV):
 				VM_TRACE(ZEND_RETURN_SPEC_CV)
@@ -60623,977 +63023,1221 @@ zend_leave_helper_SPEC_LABEL:
 	goto zend_leave_helper_SPEC_LABEL;
 }
 
+				VM_TRACE_OP_END(ZEND_RETURN_SPEC_CV)
 			HYBRID_CASE(ZEND_RETURN_BY_REF_SPEC_CV):
 				VM_TRACE(ZEND_RETURN_BY_REF_SPEC_CV)
 				ZEND_RETURN_BY_REF_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_RETURN_BY_REF_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GENERATOR_RETURN_SPEC_CV):
 				VM_TRACE(ZEND_GENERATOR_RETURN_SPEC_CV)
 				ZEND_GENERATOR_RETURN_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GENERATOR_RETURN_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_THROW_SPEC_CV):
 				VM_TRACE(ZEND_THROW_SPEC_CV)
 				ZEND_THROW_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_THROW_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_USER_SPEC_CV):
 				VM_TRACE(ZEND_SEND_USER_SPEC_CV)
 				ZEND_SEND_USER_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_USER_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_SPEC_CV):
 				VM_TRACE(ZEND_BOOL_SPEC_CV)
 				ZEND_BOOL_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CLONE_SPEC_CV):
 				VM_TRACE(ZEND_CLONE_SPEC_CV)
 				ZEND_CLONE_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CLONE_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CAST_SPEC_CV):
 				VM_TRACE(ZEND_CAST_SPEC_CV)
 				ZEND_CAST_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CAST_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INCLUDE_OR_EVAL_SPEC_CV):
 				VM_TRACE(ZEND_INCLUDE_OR_EVAL_SPEC_CV)
 				ZEND_INCLUDE_OR_EVAL_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INCLUDE_OR_EVAL_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_R_SPEC_CV):
 				VM_TRACE(ZEND_FE_RESET_R_SPEC_CV)
 				ZEND_FE_RESET_R_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_R_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FE_RESET_RW_SPEC_CV):
 				VM_TRACE(ZEND_FE_RESET_RW_SPEC_CV)
 				ZEND_FE_RESET_RW_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FE_RESET_RW_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_SET_SPEC_CV):
 				VM_TRACE(ZEND_JMP_SET_SPEC_CV)
 				ZEND_JMP_SET_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_SET_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COALESCE_SPEC_CV):
 				VM_TRACE(ZEND_COALESCE_SPEC_CV)
 				ZEND_COALESCE_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COALESCE_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_JMP_NULL_SPEC_CV):
 				VM_TRACE(ZEND_JMP_NULL_SPEC_CV)
 				ZEND_JMP_NULL_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_JMP_NULL_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_QM_ASSIGN_SPEC_CV):
 				VM_TRACE(ZEND_QM_ASSIGN_SPEC_CV)
 				ZEND_QM_ASSIGN_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_QM_ASSIGN_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_FROM_SPEC_CV):
 				VM_TRACE(ZEND_YIELD_FROM_SPEC_CV)
 				ZEND_YIELD_FROM_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_FROM_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_STRLEN_SPEC_CV):
 				VM_TRACE(ZEND_STRLEN_SPEC_CV)
 				ZEND_STRLEN_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_STRLEN_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_TYPE_CHECK_SPEC_CV):
 				VM_TRACE(ZEND_TYPE_CHECK_SPEC_CV)
 				ZEND_TYPE_CHECK_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_TYPE_CHECK_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_CLASS_NAME_SPEC_CV):
 				VM_TRACE(ZEND_FETCH_CLASS_NAME_SPEC_CV)
 				ZEND_FETCH_CLASS_NAME_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_CLASS_NAME_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BIND_STATIC_SPEC_CV):
 				VM_TRACE(ZEND_BIND_STATIC_SPEC_CV)
 				ZEND_BIND_STATIC_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BIND_STATIC_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BIND_INIT_STATIC_OR_JMP_SPEC_CV):
 				VM_TRACE(ZEND_BIND_INIT_STATIC_OR_JMP_SPEC_CV)
 				ZEND_BIND_INIT_STATIC_OR_JMP_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BIND_INIT_STATIC_OR_JMP_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED)
 				ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED)
 				ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_UNUSED)
 				ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED)
 				ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED)
 				ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED)
 				ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_UNUSED)
 				ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_USED):
 				VM_TRACE(ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_USED)
 				ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_LONG_NO_OVERFLOW_SPEC_CV):
 				VM_TRACE(ZEND_POST_INC_LONG_NO_OVERFLOW_SPEC_CV)
 				ZEND_POST_INC_LONG_NO_OVERFLOW_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_LONG_NO_OVERFLOW_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_LONG_SPEC_CV):
 				VM_TRACE(ZEND_POST_INC_LONG_SPEC_CV)
 				ZEND_POST_INC_LONG_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_LONG_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_DEC_LONG_NO_OVERFLOW_SPEC_CV):
 				VM_TRACE(ZEND_POST_DEC_LONG_NO_OVERFLOW_SPEC_CV)
 				ZEND_POST_DEC_LONG_NO_OVERFLOW_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_DEC_LONG_NO_OVERFLOW_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_DEC_LONG_SPEC_CV):
 				VM_TRACE(ZEND_POST_DEC_LONG_SPEC_CV)
 				ZEND_POST_DEC_LONG_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_DEC_LONG_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_SIMPLE_SPEC_CV):
 				VM_TRACE(ZEND_SEND_VAR_SIMPLE_SPEC_CV)
 				ZEND_SEND_VAR_SIMPLE_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_SIMPLE_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_CV_CONST):
 				VM_TRACE(ZEND_DIV_SPEC_CV_CONST)
 				ZEND_DIV_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_CV_CONST):
 				VM_TRACE(ZEND_POW_SPEC_CV_CONST)
 				ZEND_POW_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_CV_CONST):
 				VM_TRACE(ZEND_CONCAT_SPEC_CV_CONST)
 				ZEND_CONCAT_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_CV_CONST):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_CV_CONST)
 				ZEND_IS_IDENTICAL_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_CONST):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_CONST)
 				ZEND_IS_NOT_IDENTICAL_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_CONST):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_CONST)
 				ZEND_IS_EQUAL_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_CONST_JMPZ)
 				ZEND_IS_EQUAL_SPEC_CV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_CONST_JMPNZ)
 				ZEND_IS_EQUAL_SPEC_CV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPZ)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPNZ)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_CONST_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_CV_CONST):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_CV_CONST)
 				ZEND_SPACESHIP_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_XOR_SPEC_CV_CONST):
 				VM_TRACE(ZEND_BOOL_XOR_SPEC_CV_CONST)
 				ZEND_BOOL_XOR_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_XOR_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_CV_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_CV_CONST)
 				ZEND_ASSIGN_OBJ_OP_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_CV_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_CV_CONST)
 				ZEND_ASSIGN_DIM_OP_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OP_SPEC_CV_CONST):
 				VM_TRACE(ZEND_ASSIGN_OP_SPEC_CV_CONST)
 				ZEND_ASSIGN_OP_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OP_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_CV_CONST):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_CV_CONST)
 				ZEND_PRE_INC_OBJ_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_CV_CONST):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_CV_CONST)
 				ZEND_POST_INC_OBJ_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_CV_CONST)
 				ZEND_FETCH_DIM_R_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_CV_CONST)
 				ZEND_FETCH_DIM_W_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_CV_CONST)
 				ZEND_FETCH_DIM_RW_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_CV_CONST)
 				ZEND_FETCH_DIM_IS_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CONST)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_UNSET_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_UNSET_SPEC_CV_CONST)
 				ZEND_FETCH_DIM_UNSET_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_UNSET_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_CV_CONST)
 				ZEND_FETCH_OBJ_R_SPEC_CV_CONST_INLINE_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_CV_CONST)
 				ZEND_FETCH_OBJ_W_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_CV_CONST)
 				ZEND_FETCH_OBJ_RW_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_CV_CONST)
 				ZEND_FETCH_OBJ_IS_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CONST)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_CV_CONST)
 				ZEND_FETCH_OBJ_UNSET_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_CONST_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CONST_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_CV_CONST)
 				ZEND_FAST_CONCAT_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_CV_CONST):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_CV_CONST)
 				ZEND_INIT_METHOD_CALL_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_SPEC_CV_CONST):
 				VM_TRACE(ZEND_SEND_VAR_SPEC_CV_CONST)
 				ZEND_SEND_VAR_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_REF_SPEC_CV_CONST):
 				VM_TRACE(ZEND_SEND_REF_SPEC_CV_CONST)
 				ZEND_SEND_REF_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_REF_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SPEC_CV_CONST):
 				VM_TRACE(ZEND_SEND_VAR_EX_SPEC_CV_CONST)
 				ZEND_SEND_VAR_EX_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CONST):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CONST)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CV_CONST):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CV_CONST)
 				ZEND_INIT_ARRAY_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_DIM_SPEC_CV_CONST):
 				VM_TRACE(ZEND_UNSET_DIM_SPEC_CV_CONST)
 				ZEND_UNSET_DIM_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_DIM_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_CV_CONST):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_CV_CONST)
 				ZEND_UNSET_OBJ_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CONST):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CONST)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CONST):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CONST)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CONST):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CONST)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INSTANCEOF_SPEC_CV_CONST):
 				VM_TRACE(ZEND_INSTANCEOF_SPEC_CV_CONST)
 				ZEND_INSTANCEOF_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INSTANCEOF_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CV_CONST):
 				VM_TRACE(ZEND_YIELD_SPEC_CV_CONST)
 				ZEND_YIELD_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BIND_GLOBAL_SPEC_CV_CONST):
 				VM_TRACE(ZEND_BIND_GLOBAL_SPEC_CV_CONST)
 				ZEND_BIND_GLOBAL_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BIND_GLOBAL_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IN_ARRAY_SPEC_CV_CONST):
 				VM_TRACE(ZEND_IN_ARRAY_SPEC_CV_CONST)
 				ZEND_IN_ARRAY_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IN_ARRAY_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CONST):
 				VM_TRACE(ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CONST)
 				ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CONST):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CONST)
 				ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_INDEX_SPEC_CV_CONST):
 				VM_TRACE(ZEND_FETCH_DIM_R_INDEX_SPEC_CV_CONST)
 				ZEND_FETCH_DIM_R_INDEX_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_INDEX_SPEC_CV_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_INDEX_SPEC_CV_TMPVARCV):
 				VM_TRACE(ZEND_FETCH_DIM_R_INDEX_SPEC_CV_TMPVARCV)
 				ZEND_FETCH_DIM_R_INDEX_SPEC_CV_TMPVARCV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_INDEX_SPEC_CV_TMPVARCV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_DIV_SPEC_CV_TMPVAR)
 				ZEND_DIV_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_POW_SPEC_CV_TMPVAR)
 				ZEND_POW_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_CONCAT_SPEC_CV_TMPVAR)
 				ZEND_CONCAT_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_TMPVAR)
 				ZEND_IS_EQUAL_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPZ)
 				ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPNZ)
 				ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_TMPVAR_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPZ)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPNZ)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_TMPVAR_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_CV_TMPVAR)
 				ZEND_SPACESHIP_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_XOR_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_BOOL_XOR_SPEC_CV_TMPVAR)
 				ZEND_BOOL_XOR_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_XOR_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_CV_TMPVAR)
 				ZEND_ASSIGN_OBJ_OP_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_CV_TMPVAR)
 				ZEND_ASSIGN_DIM_OP_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OP_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_ASSIGN_OP_SPEC_CV_TMPVAR)
 				ZEND_ASSIGN_OP_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OP_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_CV_TMPVAR)
 				ZEND_PRE_INC_OBJ_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_CV_TMPVAR)
 				ZEND_POST_INC_OBJ_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_CV_TMPVAR)
 				ZEND_FETCH_DIM_R_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_CV_TMPVAR)
 				ZEND_FETCH_DIM_W_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_CV_TMPVAR)
 				ZEND_FETCH_DIM_RW_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_CV_TMPVAR)
 				ZEND_FETCH_DIM_IS_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_TMPVAR)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_UNSET_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_DIM_UNSET_SPEC_CV_TMPVAR)
 				ZEND_FETCH_DIM_UNSET_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_UNSET_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_CV_TMPVAR)
 				ZEND_FETCH_OBJ_R_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_CV_TMPVAR)
 				ZEND_FETCH_OBJ_W_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_CV_TMPVAR)
 				ZEND_FETCH_OBJ_RW_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_CV_TMPVAR)
 				ZEND_FETCH_OBJ_IS_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_TMPVAR)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_CV_TMPVAR)
 				ZEND_FETCH_OBJ_UNSET_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_CV_TMPVAR_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_CV_TMPVAR)
 				ZEND_FAST_CONCAT_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVAR)
 				ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_TMPVAR)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CV_TMPVAR)
 				ZEND_INIT_ARRAY_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_DIM_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_UNSET_DIM_SPEC_CV_TMPVAR)
 				ZEND_UNSET_DIM_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_DIM_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_CV_TMPVAR)
 				ZEND_UNSET_OBJ_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_TMPVAR)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_TMPVAR)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_TMPVAR)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CV_TMPVAR):
 				VM_TRACE(ZEND_YIELD_SPEC_CV_TMPVAR)
 				ZEND_YIELD_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CV_TMPVAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_CV_TMP):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_CV_TMP)
 				ZEND_IS_IDENTICAL_SPEC_CV_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_CV_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_TMP):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_TMP)
 				ZEND_IS_NOT_IDENTICAL_SPEC_CV_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_CV_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_TMP_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_CV_VAR):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_CV_VAR)
 				ZEND_IS_IDENTICAL_SPEC_CV_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_CV_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_VAR):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_VAR)
 				ZEND_IS_NOT_IDENTICAL_SPEC_CV_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_CV_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_VAR_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_REF_SPEC_CV_VAR):
 				VM_TRACE(ZEND_ASSIGN_REF_SPEC_CV_VAR)
 				ZEND_ASSIGN_REF_SPEC_CV_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_REF_SPEC_CV_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INSTANCEOF_SPEC_CV_VAR):
 				VM_TRACE(ZEND_INSTANCEOF_SPEC_CV_VAR)
 				ZEND_INSTANCEOF_SPEC_CV_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INSTANCEOF_SPEC_CV_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_CV_UNUSED)
 				ZEND_ASSIGN_DIM_OP_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_R_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_R_SPEC_CV_UNUSED)
 				ZEND_FETCH_R_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_R_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_W_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_W_SPEC_CV_UNUSED)
 				ZEND_FETCH_W_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_W_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_RW_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_RW_SPEC_CV_UNUSED)
 				ZEND_FETCH_RW_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_RW_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_FUNC_ARG_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_FUNC_ARG_SPEC_CV_UNUSED)
 				ZEND_FETCH_FUNC_ARG_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_FUNC_ARG_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_UNSET_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_UNSET_SPEC_CV_UNUSED)
 				ZEND_FETCH_UNSET_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_UNSET_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_IS_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_IS_SPEC_CV_UNUSED)
 				ZEND_FETCH_IS_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_IS_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_CV_UNUSED)
 				ZEND_FETCH_DIM_W_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_CV_UNUSED)
 				ZEND_FETCH_DIM_RW_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_UNUSED)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_UNUSED_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_VERIFY_RETURN_TYPE_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_VERIFY_RETURN_TYPE_SPEC_CV_UNUSED)
 				ZEND_VERIFY_RETURN_TYPE_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_VERIFY_RETURN_TYPE_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_SPEC_CV_UNUSED)
 				ZEND_SEND_VAR_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_REF_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_SEND_REF_SPEC_CV_UNUSED)
 				ZEND_SEND_REF_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_REF_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_EX_SPEC_CV_UNUSED)
 				ZEND_SEND_VAR_EX_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SPEC_CV_UNUSED_QUICK):
 				VM_TRACE(ZEND_SEND_VAR_EX_SPEC_CV_UNUSED_QUICK)
 				ZEND_SEND_VAR_EX_SPEC_CV_UNUSED_QUICK_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SPEC_CV_UNUSED_QUICK)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_UNUSED)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CV_UNUSED)
 				ZEND_INIT_ARRAY_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_CV_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_UNSET_CV_SPEC_CV_UNUSED)
 				ZEND_UNSET_CV_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_CV_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_VAR_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_UNSET_VAR_SPEC_CV_UNUSED)
 				ZEND_UNSET_VAR_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_VAR_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_SET):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_SET)
 				ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_SET_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_SET)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_EMPTY):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_EMPTY)
 				ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_EMPTY_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_CV_SPEC_CV_UNUSED_EMPTY)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_VAR_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_VAR_SPEC_CV_UNUSED)
 				ZEND_ISSET_ISEMPTY_VAR_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_VAR_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INSTANCEOF_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_INSTANCEOF_SPEC_CV_UNUSED)
 				ZEND_INSTANCEOF_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INSTANCEOF_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_YIELD_SPEC_CV_UNUSED)
 				ZEND_YIELD_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CHECK_VAR_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_CHECK_VAR_SPEC_CV_UNUSED)
 				ZEND_CHECK_VAR_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CHECK_VAR_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_MAKE_REF_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_MAKE_REF_SPEC_CV_UNUSED)
 				ZEND_MAKE_REF_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_MAKE_REF_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COUNT_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_COUNT_SPEC_CV_UNUSED)
 				ZEND_COUNT_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COUNT_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_COUNT_ARRAY_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_COUNT_ARRAY_SPEC_CV_UNUSED)
 				ZEND_COUNT_ARRAY_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_COUNT_ARRAY_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_CLASS_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_GET_CLASS_SPEC_CV_UNUSED)
 				ZEND_GET_CLASS_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_CLASS_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_GET_TYPE_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_GET_TYPE_SPEC_CV_UNUSED)
 				ZEND_GET_TYPE_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GET_TYPE_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_VAR_EX_SIMPLE_SPEC_CV_UNUSED):
 				VM_TRACE(ZEND_SEND_VAR_EX_SIMPLE_SPEC_CV_UNUSED)
 				ZEND_SEND_VAR_EX_SIMPLE_SPEC_CV_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SEND_VAR_EX_SIMPLE_SPEC_CV_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_DIV_SPEC_CV_CV):
 				VM_TRACE(ZEND_DIV_SPEC_CV_CV)
 				ZEND_DIV_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_DIV_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POW_SPEC_CV_CV):
 				VM_TRACE(ZEND_POW_SPEC_CV_CV)
 				ZEND_POW_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POW_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CONCAT_SPEC_CV_CV):
 				VM_TRACE(ZEND_CONCAT_SPEC_CV_CV)
 				ZEND_CONCAT_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_CONCAT_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_SPEC_CV_CV):
 				VM_TRACE(ZEND_IS_IDENTICAL_SPEC_CV_CV)
 				ZEND_IS_IDENTICAL_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_CV):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_SPEC_CV_CV)
 				ZEND_IS_NOT_IDENTICAL_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_CV):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_CV)
 				ZEND_IS_EQUAL_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_CV_JMPZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_CV_JMPZ)
 				ZEND_IS_EQUAL_SPEC_CV_CV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_CV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_EQUAL_SPEC_CV_CV_JMPNZ):
 				VM_TRACE(ZEND_IS_EQUAL_SPEC_CV_CV_JMPNZ)
 				ZEND_IS_EQUAL_SPEC_CV_CV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_EQUAL_SPEC_CV_CV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_CV):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_CV)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPZ)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPNZ):
 				VM_TRACE(ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPNZ)
 				ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPNZ_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_EQUAL_SPEC_CV_CV_JMPNZ)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SPACESHIP_SPEC_CV_CV):
 				VM_TRACE(ZEND_SPACESHIP_SPEC_CV_CV)
 				ZEND_SPACESHIP_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_SPACESHIP_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_BOOL_XOR_SPEC_CV_CV):
 				VM_TRACE(ZEND_BOOL_XOR_SPEC_CV_CV)
 				ZEND_BOOL_XOR_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_BOOL_XOR_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_OP_SPEC_CV_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_OP_SPEC_CV_CV)
 				ZEND_ASSIGN_OBJ_OP_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_OP_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_OP_SPEC_CV_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_OP_SPEC_CV_CV)
 				ZEND_ASSIGN_DIM_OP_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_OP_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OP_SPEC_CV_CV):
 				VM_TRACE(ZEND_ASSIGN_OP_SPEC_CV_CV)
 				ZEND_ASSIGN_OP_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OP_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_INC_OBJ_SPEC_CV_CV):
 				VM_TRACE(ZEND_PRE_INC_OBJ_SPEC_CV_CV)
 				ZEND_PRE_INC_OBJ_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_INC_OBJ_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_POST_INC_OBJ_SPEC_CV_CV):
 				VM_TRACE(ZEND_POST_INC_OBJ_SPEC_CV_CV)
 				ZEND_POST_INC_OBJ_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_POST_INC_OBJ_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_R_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_DIM_R_SPEC_CV_CV)
 				ZEND_FETCH_DIM_R_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_R_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_W_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_DIM_W_SPEC_CV_CV)
 				ZEND_FETCH_DIM_W_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_W_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_RW_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_DIM_RW_SPEC_CV_CV)
 				ZEND_FETCH_DIM_RW_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_RW_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_IS_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_DIM_IS_SPEC_CV_CV)
 				ZEND_FETCH_DIM_IS_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_IS_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CV)
 				ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_FUNC_ARG_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_DIM_UNSET_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_DIM_UNSET_SPEC_CV_CV)
 				ZEND_FETCH_DIM_UNSET_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_DIM_UNSET_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_R_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_R_SPEC_CV_CV)
 				ZEND_FETCH_OBJ_R_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_R_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_W_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_W_SPEC_CV_CV)
 				ZEND_FETCH_OBJ_W_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_W_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_RW_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_RW_SPEC_CV_CV)
 				ZEND_FETCH_OBJ_RW_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_RW_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_IS_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_IS_SPEC_CV_CV)
 				ZEND_FETCH_OBJ_IS_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_IS_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CV)
 				ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_FUNC_ARG_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FETCH_OBJ_UNSET_SPEC_CV_CV):
 				VM_TRACE(ZEND_FETCH_OBJ_UNSET_SPEC_CV_CV)
 				ZEND_FETCH_OBJ_UNSET_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FETCH_OBJ_UNSET_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CONST)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_TMP)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_SPEC_CV_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CONST):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CONST)
 				ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CONST)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_TMP):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_TMP)
 				ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_TMP_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_TMP)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CV)
 				ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_DIM_SPEC_CV_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_CV_RETVAL_UNUSED)
 				ZEND_ASSIGN_SPEC_CV_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_CV_RETVAL_UNUSED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_SPEC_CV_CV_RETVAL_USED):
 				VM_TRACE(ZEND_ASSIGN_SPEC_CV_CV_RETVAL_USED)
 				ZEND_ASSIGN_SPEC_CV_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_SPEC_CV_CV_RETVAL_USED)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_REF_SPEC_CV_CV):
 				VM_TRACE(ZEND_ASSIGN_REF_SPEC_CV_CV)
 				ZEND_ASSIGN_REF_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_REF_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_VAR):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_VAR)
 				ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_VAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_VAR)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_CV):
 				VM_TRACE(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_CV)
 				ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ASSIGN_OBJ_REF_SPEC_CV_CV_OP_DATA_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_FAST_CONCAT_SPEC_CV_CV):
 				VM_TRACE(ZEND_FAST_CONCAT_SPEC_CV_CV)
 				ZEND_FAST_CONCAT_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FAST_CONCAT_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_METHOD_CALL_SPEC_CV_CV):
 				VM_TRACE(ZEND_INIT_METHOD_CALL_SPEC_CV_CV)
 				ZEND_INIT_METHOD_CALL_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_METHOD_CALL_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CV):
 				VM_TRACE(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CV)
 				ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ADD_ARRAY_ELEMENT_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_ARRAY_SPEC_CV_CV):
 				VM_TRACE(ZEND_INIT_ARRAY_SPEC_CV_CV)
 				ZEND_INIT_ARRAY_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_INIT_ARRAY_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_DIM_SPEC_CV_CV):
 				VM_TRACE(ZEND_UNSET_DIM_SPEC_CV_CV)
 				ZEND_UNSET_DIM_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_DIM_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_UNSET_OBJ_SPEC_CV_CV):
 				VM_TRACE(ZEND_UNSET_OBJ_SPEC_CV_CV)
 				ZEND_UNSET_OBJ_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_UNSET_OBJ_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CV):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CV)
 				ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_DIM_OBJ_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CV):
 				VM_TRACE(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CV)
 				ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ISSET_ISEMPTY_PROP_OBJ_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CV):
 				VM_TRACE(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CV)
 				ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_ARRAY_KEY_EXISTS_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_YIELD_SPEC_CV_CV):
 				VM_TRACE(ZEND_YIELD_SPEC_CV_CV)
 				ZEND_YIELD_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_YIELD_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CV):
 				VM_TRACE(ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CV)
 				ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_IDENTICAL_NOTHROW_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CV):
 				VM_TRACE(ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CV)
 				ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_IS_NOT_IDENTICAL_NOTHROW_SPEC_CV_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(HYBRID_HALT):
 #ifdef ZEND_VM_FP_GLOBAL_REG
@@ -61606,6 +64250,7 @@ zend_leave_helper_SPEC_LABEL:
 			HYBRID_DEFAULT:
 				VM_TRACE(ZEND_NULL)
 				ZEND_NULL_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_NULL)
 				HYBRID_BREAK(); /* Never reached */
 #else
 #ifdef ZEND_VM_FP_GLOBAL_REG
@@ -63261,7 +65906,6 @@ void zend_vm_init(void)
 		ZEND_NULL_HANDLER,
 		ZEND_FE_RESET_R_SPEC_CV_HANDLER,
 		ZEND_FE_FETCH_R_SPEC_VAR_HANDLER,
-		ZEND_EXIT_SPEC_HANDLER,
 		ZEND_FETCH_R_SPEC_CONST_UNUSED_HANDLER,
 		ZEND_FETCH_R_SPEC_TMPVAR_UNUSED_HANDLER,
 		ZEND_FETCH_R_SPEC_TMPVAR_UNUSED_HANDLER,
@@ -64239,6 +66883,17 @@ void zend_vm_init(void)
 		ZEND_VERIFY_NEVER_TYPE_SPEC_UNUSED_UNUSED_HANDLER,
 		ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED_HANDLER,
 		ZEND_BIND_INIT_STATIC_OR_JMP_SPEC_CV_HANDLER,
+		ZEND_FRAMELESS_ICALL_0_SPEC_UNUSED_UNUSED_HANDLER,
+		ZEND_FRAMELESS_ICALL_0_SPEC_OBSERVER_HANDLER,
+		ZEND_FRAMELESS_ICALL_1_SPEC_UNUSED_HANDLER,
+		ZEND_FRAMELESS_ICALL_1_SPEC_OBSERVER_HANDLER,
+		ZEND_FRAMELESS_ICALL_2_SPEC_HANDLER,
+		ZEND_FRAMELESS_ICALL_2_SPEC_OBSERVER_HANDLER,
+		ZEND_FRAMELESS_ICALL_3_SPEC_HANDLER,
+		ZEND_FRAMELESS_ICALL_3_SPEC_OBSERVER_HANDLER,
+		ZEND_JMP_FRAMELESS_SPEC_CONST_HANDLER,
+		ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED_HANDLER,
+		ZEND_INIT_FCALL_OFFSET_SPEC_CONST_HANDLER,
 		ZEND_RECV_NOTYPE_SPEC_HANDLER,
 		ZEND_NULL_HANDLER,
 		ZEND_COUNT_ARRAY_SPEC_TMPVAR_UNUSED_HANDLER,
@@ -65195,7 +67850,7 @@ void zend_vm_init(void)
 		1255,
 		1256 | SPEC_RULE_OP1,
 		1261 | SPEC_RULE_OP1,
-		3476,
+		3486,
 		1266 | SPEC_RULE_OP1,
 		1271 | SPEC_RULE_OP1,
 		1276 | SPEC_RULE_OP2,
@@ -65229,100 +67884,101 @@ void zend_vm_init(void)
 		1559 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
 		1584 | SPEC_RULE_OP1,
 		1589,
-		1590,
-		1591 | SPEC_RULE_OP1,
-		1596 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1621 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1646 | SPEC_RULE_OP1,
-		1651 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1676 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1701 | SPEC_RULE_OP1,
-		1706 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1731 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1756 | SPEC_RULE_OP1,
-		1761 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1786 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1811 | SPEC_RULE_OP1,
-		1816 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1841 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1866 | SPEC_RULE_OP1,
-		1871 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1896 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1921 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		1946,
-		1947 | SPEC_RULE_OP2 | SPEC_RULE_QUICK_ARG,
+		3486,
+		1590 | SPEC_RULE_OP1,
+		1595 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1620 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1645 | SPEC_RULE_OP1,
+		1650 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1675 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1700 | SPEC_RULE_OP1,
+		1705 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1730 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1755 | SPEC_RULE_OP1,
+		1760 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1785 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1810 | SPEC_RULE_OP1,
+		1815 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1840 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1865 | SPEC_RULE_OP1,
+		1870 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1895 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1920 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		1945,
+		1946 | SPEC_RULE_OP2 | SPEC_RULE_QUICK_ARG,
+		1956,
 		1957,
 		1958,
 		1959,
 		1960,
-		1961,
-		1962 | SPEC_RULE_OP2,
-		1967,
-		1968 | SPEC_RULE_OP1,
-		1973 | SPEC_RULE_OP2,
-		1978 | SPEC_RULE_OP1,
-		1983 | SPEC_RULE_OP1 | SPEC_RULE_OBSERVER,
-		1993 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2018 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2043 | SPEC_RULE_OP1,
-		2048 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2073 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_QUICK_ARG,
-		2123 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2148 | SPEC_RULE_OP2,
-		2153,
-		2154 | SPEC_RULE_OP1,
-		2159 | SPEC_RULE_OP1,
-		2164,
-		2165 | SPEC_RULE_OP1,
-		2170 | SPEC_RULE_OP1,
-		2175 | SPEC_RULE_OP1,
+		1961 | SPEC_RULE_OP2,
+		1966,
+		1967 | SPEC_RULE_OP1,
+		1972 | SPEC_RULE_OP2,
+		1977 | SPEC_RULE_OP1,
+		1982 | SPEC_RULE_OP1 | SPEC_RULE_OBSERVER,
+		1992 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2017 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2042 | SPEC_RULE_OP1,
+		2047 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2072 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_QUICK_ARG,
+		2122 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2147 | SPEC_RULE_OP2,
+		2152,
+		2153 | SPEC_RULE_OP1,
+		2158 | SPEC_RULE_OP1,
+		2163,
+		2164 | SPEC_RULE_OP1,
+		2169 | SPEC_RULE_OP1,
+		2174 | SPEC_RULE_OP1,
+		2179,
 		2180,
-		2181,
-		2182 | SPEC_RULE_OP2,
-		2187 | SPEC_RULE_RETVAL | SPEC_RULE_OBSERVER,
-		2191 | SPEC_RULE_RETVAL | SPEC_RULE_OBSERVER,
-		2195 | SPEC_RULE_RETVAL | SPEC_RULE_OBSERVER,
-		2199 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2199 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2224 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2224 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2249 | SPEC_RULE_OP1,
-		2254,
-		2255 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2280,
-		2281 | SPEC_RULE_OP1,
+		2181 | SPEC_RULE_OP2,
+		2186 | SPEC_RULE_RETVAL | SPEC_RULE_OBSERVER,
+		2190 | SPEC_RULE_RETVAL | SPEC_RULE_OBSERVER,
+		2194 | SPEC_RULE_RETVAL | SPEC_RULE_OBSERVER,
+		2198 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2198 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2223 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2223 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2248 | SPEC_RULE_OP1,
+		2253,
+		2254 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2279,
+		2280 | SPEC_RULE_OP1,
+		2285,
 		2286,
 		2287,
 		2288,
 		2289,
 		2290,
 		2291,
-		2292,
-		2293 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2292 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2317,
 		2318,
 		2319,
-		2320,
-		2321 | SPEC_RULE_OP1,
-		2326,
-		2327 | SPEC_RULE_ISSET,
-		2329 | SPEC_RULE_OP2,
-		2334,
-		2335 | SPEC_RULE_OP1,
-		2340 | SPEC_RULE_OBSERVER,
-		2342,
-		2343 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2368 | SPEC_RULE_OP1 | SPEC_RULE_OBSERVER,
+		2320 | SPEC_RULE_OP1,
+		2325,
+		2326 | SPEC_RULE_ISSET,
+		2328 | SPEC_RULE_OP2,
+		2333,
+		2334 | SPEC_RULE_OP1,
+		2339 | SPEC_RULE_OBSERVER,
+		2341,
+		2342 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2367 | SPEC_RULE_OP1 | SPEC_RULE_OBSERVER,
+		2377,
 		2378,
 		2379,
 		2380,
-		2381,
-		2382 | SPEC_RULE_OP1,
+		2381 | SPEC_RULE_OP1,
+		2386,
 		2387,
-		2388,
-		2389 | SPEC_RULE_OP1,
-		2394 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2419,
-		2420 | SPEC_RULE_OP1,
+		2388 | SPEC_RULE_OP1,
+		2393 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2418,
+		2419 | SPEC_RULE_OP1,
+		2424,
 		2425,
 		2426,
 		2427,
@@ -65330,82 +67986,81 @@ void zend_vm_init(void)
 		2429,
 		2430,
 		2431,
-		2432,
-		2433 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2432 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2457,
 		2458,
 		2459,
-		2460,
-		2461 | SPEC_RULE_OP2,
-		2466,
-		2467 | SPEC_RULE_OP1,
-		2472 | SPEC_RULE_OP1,
-		2477 | SPEC_RULE_OP1,
-		2482 | SPEC_RULE_OP1,
-		2487 | SPEC_RULE_OP1,
-		2492,
-		2493 | SPEC_RULE_OP1,
-		2498 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2523 | SPEC_RULE_OP1,
-		2528 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2553 | SPEC_RULE_OP1,
-		2558 | SPEC_RULE_OP1,
+		2460 | SPEC_RULE_OP2,
+		2465,
+		2466 | SPEC_RULE_OP1,
+		2471 | SPEC_RULE_OP1,
+		2476 | SPEC_RULE_OP1,
+		2481 | SPEC_RULE_OP1,
+		2486 | SPEC_RULE_OP1,
+		2491,
+		2492 | SPEC_RULE_OP1,
+		2497 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2522 | SPEC_RULE_OP1,
+		2527 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2552 | SPEC_RULE_OP1,
+		2557 | SPEC_RULE_OP1,
+		2562,
 		2563,
 		2564,
 		2565,
 		2566,
-		2567,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
+		2567 | SPEC_RULE_OBSERVER,
+		2569 | SPEC_RULE_OBSERVER,
+		2571 | SPEC_RULE_OBSERVER,
+		2573 | SPEC_RULE_OBSERVER,
+		2575,
+		2576,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
+		3486,
 	};
 #if (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID)
 	zend_opcode_handler_funcs = labels;
@@ -65578,7 +68233,7 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2575 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2585 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 				if (op->op1_type < op->op2_type) {
 					zend_swap_operands(op);
 				}
@@ -65586,7 +68241,7 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2600 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2610 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 				if (op->op1_type < op->op2_type) {
 					zend_swap_operands(op);
 				}
@@ -65594,7 +68249,7 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2625 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2635 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 				if (op->op1_type < op->op2_type) {
 					zend_swap_operands(op);
 				}
@@ -65605,17 +68260,17 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2650 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 2660 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			} else if (op1_info == MAY_BE_LONG && op2_info == MAY_BE_LONG) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2675 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 2685 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2700 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 2710 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			}
 			break;
 		case ZEND_MUL:
@@ -65626,17 +68281,17 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2725 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2735 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_LONG && op2_info == MAY_BE_LONG) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2750 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2760 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2775 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2785 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_IDENTICAL:
@@ -65647,14 +68302,14 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2800 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2810 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2875 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2885 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op->op1_type == IS_CV && (op->op2_type & (IS_CONST|IS_CV)) && !(op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) && !(op2_info & (MAY_BE_UNDEF|MAY_BE_REF))) {
-				spec = 3100 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 3110 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_NOT_IDENTICAL:
@@ -65665,14 +68320,14 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2950 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2960 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3025 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 3035 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op->op1_type == IS_CV && (op->op2_type & (IS_CONST|IS_CV)) && !(op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) && !(op2_info & (MAY_BE_UNDEF|MAY_BE_REF))) {
-				spec = 3105 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 3115 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_EQUAL:
@@ -65683,12 +68338,12 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2800 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2810 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2875 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2885 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_NOT_EQUAL:
@@ -65699,12 +68354,12 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2950 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2960 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3025 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 3035 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_SMALLER:
@@ -65712,12 +68367,12 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3110 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3120 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3185 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3195 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			}
 			break;
 		case ZEND_IS_SMALLER_OR_EQUAL:
@@ -65725,74 +68380,79 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3260 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3270 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3335 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3345 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			}
 			break;
 		case ZEND_QM_ASSIGN:
 			if (op1_info == MAY_BE_LONG) {
-				spec = 3422 | SPEC_RULE_OP1;
-			} else if (op1_info == MAY_BE_DOUBLE) {
-				spec = 3427 | SPEC_RULE_OP1;
-			} else if ((op->op1_type == IS_CONST) ? !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1)) : (!(op1_info & ((MAY_BE_ANY|MAY_BE_UNDEF)-(MAY_BE_NULL|MAY_BE_FALSE|MAY_BE_TRUE|MAY_BE_LONG|MAY_BE_DOUBLE))))) {
 				spec = 3432 | SPEC_RULE_OP1;
+			} else if (op1_info == MAY_BE_DOUBLE) {
+				spec = 3437 | SPEC_RULE_OP1;
+			} else if ((op->op1_type == IS_CONST) ? !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1)) : (!(op1_info & ((MAY_BE_ANY|MAY_BE_UNDEF)-(MAY_BE_NULL|MAY_BE_FALSE|MAY_BE_TRUE|MAY_BE_LONG|MAY_BE_DOUBLE))))) {
+				spec = 3442 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_PRE_INC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3410 | SPEC_RULE_RETVAL;
+				spec = 3420 | SPEC_RULE_RETVAL;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3412 | SPEC_RULE_RETVAL;
+				spec = 3422 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_PRE_DEC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3414 | SPEC_RULE_RETVAL;
+				spec = 3424 | SPEC_RULE_RETVAL;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3416 | SPEC_RULE_RETVAL;
+				spec = 3426 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_POST_INC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3418;
+				spec = 3428;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3419;
+				spec = 3429;
 			}
 			break;
 		case ZEND_POST_DEC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3420;
+				spec = 3430;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3421;
+				spec = 3431;
 			}
 			break;
 		case ZEND_JMP:
 			if (OP_JMP_ADDR(op, op->op1) > op) {
-				spec = 2574;
+				spec = 2584;
+			}
+			break;
+		case ZEND_INIT_FCALL:
+			if (Z_EXTRA_P(RT_CONSTANT(op, op->op2)) != 0) {
+				spec = 2577;
 			}
 			break;
 		case ZEND_RECV:
 			if (op->op2.num == MAY_BE_ANY) {
-				spec = 2568;
+				spec = 2578;
 			}
 			break;
 		case ZEND_SEND_VAL:
 			if (op->op1_type == IS_CONST && op->op2_type == IS_UNUSED && !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1))) {
-				spec = 3472;
+				spec = 3482;
 			}
 			break;
 		case ZEND_SEND_VAR_EX:
 			if (op->op2_type == IS_UNUSED && op->op2.num <= MAX_ARG_FLAG_NUM && (op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) == 0) {
-				spec = 3467 | SPEC_RULE_OP1;
+				spec = 3477 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_FE_FETCH_R:
 			if (op->op2_type == IS_CV && (op1_info & (MAY_BE_ANY|MAY_BE_REF)) == MAY_BE_ARRAY) {
-				spec = 3474 | SPEC_RULE_RETVAL;
+				spec = 3484 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_FETCH_DIM_R:
@@ -65800,22 +68460,22 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3437 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 3447 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			}
 			break;
 		case ZEND_SEND_VAL_EX:
 			if (op->op2_type == IS_UNUSED && op->op2.num <= MAX_ARG_FLAG_NUM && op->op1_type == IS_CONST && !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1))) {
-				spec = 3473;
+				spec = 3483;
 			}
 			break;
 		case ZEND_SEND_VAR:
 			if (op->op2_type == IS_UNUSED && (op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) == 0) {
-				spec = 3462 | SPEC_RULE_OP1;
+				spec = 3472 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_COUNT:
 			if ((op1_info & (MAY_BE_ANY|MAY_BE_UNDEF|MAY_BE_REF)) == MAY_BE_ARRAY) {
-				spec = 2569 | SPEC_RULE_OP1;
+				spec = 2579 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_BW_OR:

@@ -267,6 +267,19 @@ mysqlnd_read_header(MYSQLND_PFC * pfc, MYSQLND_VIO * vio, MYSQLND_PACKET_HEADER 
 		pfc->data->packet_no++;
 		DBG_RETURN(PASS);
 	}
+	// @see https://dev.mysql.com/worklog/task/?id=12999
+	if (header->size > 0) {
+		zend_uchar *buf = mnd_emalloc(header->size);
+		if ((PASS == pfc->data->m.receive(pfc, vio, buf, header->size, conn_stats, error_info)) && buf[0] == ERROR_MARKER) {
+			php_mysqlnd_read_error_from_line(buf + 1, header->size - 1,
+			                                 error_info->error, sizeof(error_info->error),
+			                                 &error_info->error_no, error_info->sqlstate
+			);
+			mnd_efree(buf);
+			DBG_RETURN(FAIL);
+		}
+		mnd_efree(buf);
+	}
 
 	DBG_ERR_FMT("Logical link: packets out of order. Expected %u received %u. Packet size=%zu",
 				pfc->data->packet_no, header->packet_no, header->size);
@@ -294,7 +307,9 @@ mysqlnd_read_packet_header_and_body(MYSQLND_PACKET_HEADER * packet_header,
 	DBG_INF_FMT("buf=%p size=%zu", buf, buf_size);
 	if (FAIL == mysqlnd_read_header(pfc, vio, packet_header, stats, error_info)) {
 		SET_CONNECTION_STATE(connection_state, CONN_QUIT_SENT);
-		SET_CLIENT_ERROR(error_info, CR_SERVER_GONE_ERROR, UNKNOWN_SQLSTATE, mysqlnd_server_gone);
+		if (error_info->error_no == 0) {
+			SET_CLIENT_ERROR(error_info, CR_SERVER_GONE_ERROR, UNKNOWN_SQLSTATE, mysqlnd_server_gone);
+		}
 		DBG_ERR_FMT("Can't read %s's header", packet_type_as_text);
 		DBG_RETURN(FAIL);
 	}
@@ -539,8 +554,7 @@ size_t php_mysqlnd_auth_write(MYSQLND_CONN_DATA * conn, void * _packet)
 
 	if (packet->send_auth_data || packet->is_change_user_packet) {
 		len = MIN(strlen(packet->user), MYSQLND_MAX_ALLOWED_USER_LEN);
-		memcpy(p, packet->user, len);
-		p+= len;
+		p = zend_mempcpy(p, packet->user, len);
 		*p++ = '\0';
 
 		/* defensive coding */
@@ -563,15 +577,13 @@ size_t php_mysqlnd_auth_write(MYSQLND_CONN_DATA * conn, void * _packet)
 			DBG_RETURN(0);
 		}
 		if (packet->auth_data_len) {
-			memcpy(p, packet->auth_data, packet->auth_data_len);
-			p+= packet->auth_data_len;
+			p = zend_mempcpy(p, packet->auth_data, packet->auth_data_len);
 		}
 
 		if (packet->db_len > 0) {
 			/* CLIENT_CONNECT_WITH_DB should have been set */
 			size_t real_db_len = MIN(MYSQLND_MAX_ALLOWED_DB_LEN, packet->db_len);
-			memcpy(p, packet->db, real_db_len);
-			p+= real_db_len;
+			p = zend_mempcpy(p, packet->db, real_db_len);
 			*p++= '\0';
 		} else if (packet->is_change_user_packet) {
 			*p++= '\0';
@@ -587,8 +599,7 @@ size_t php_mysqlnd_auth_write(MYSQLND_CONN_DATA * conn, void * _packet)
 
 		if (packet->auth_plugin_name) {
 			len = MIN(strlen(packet->auth_plugin_name), sizeof(buffer) - (p - buffer) - 1);
-			memcpy(p, packet->auth_plugin_name, len);
-			p+= len;
+			p = zend_mempcpy(p, packet->auth_plugin_name, len);
 			*p++= '\0';
 		}
 
@@ -622,12 +633,10 @@ size_t php_mysqlnd_auth_write(MYSQLND_CONN_DATA * conn, void * _packet)
 
 							/* copy key */
 							p = php_mysqlnd_net_store_length(p, ZSTR_LEN(key));
-							memcpy(p, ZSTR_VAL(key), ZSTR_LEN(key));
-							p+= ZSTR_LEN(key);
+							p = zend_mempcpy(p, ZSTR_VAL(key), ZSTR_LEN(key));
 							/* copy value */
 							p = php_mysqlnd_net_store_length(p, value_len);
-							memcpy(p, Z_STRVAL_P(entry_value), value_len);
-							p+= value_len;
+							p = zend_mempcpy(p, Z_STRVAL_P(entry_value), value_len);
 						}
 					} ZEND_HASH_FOREACH_END();
 				}
@@ -796,8 +805,7 @@ php_mysqlnd_change_auth_response_write(MYSQLND_CONN_DATA * conn, void * _packet)
 	DBG_ENTER("php_mysqlnd_change_auth_response_write");
 
 	if (packet->auth_data_len) {
-		memcpy(p, packet->auth_data, packet->auth_data_len);
-		p+= packet->auth_data_len;
+		p = zend_mempcpy(p, packet->auth_data, packet->auth_data_len);
 	}
 
 	{
@@ -1525,6 +1533,7 @@ php_mysqlnd_rowp_read_binary_protocol(MYSQLND_ROW_BUFFER * row_buffer, zval * fi
 					case MYSQL_TYPE_MEDIUM_BLOB:statistic = STAT_BINARY_TYPE_FETCHED_BLOB; break;
 					case MYSQL_TYPE_LONG_BLOB:	statistic = STAT_BINARY_TYPE_FETCHED_BLOB; break;
 					case MYSQL_TYPE_BLOB:		statistic = STAT_BINARY_TYPE_FETCHED_BLOB; break;
+					case MYSQL_TYPE_VECTOR:		statistic = STAT_BINARY_TYPE_FETCHED_BLOB; break;
 					case MYSQL_TYPE_VAR_STRING:	statistic = STAT_BINARY_TYPE_FETCHED_STRING; break;
 					case MYSQL_TYPE_STRING:		statistic = STAT_BINARY_TYPE_FETCHED_STRING; break;
 					case MYSQL_TYPE_GEOMETRY:	statistic = STAT_BINARY_TYPE_FETCHED_GEOMETRY; break;
@@ -1612,6 +1621,7 @@ php_mysqlnd_rowp_read_text_protocol(MYSQLND_ROW_BUFFER * row_buffer, zval * fiel
 					case MYSQL_TYPE_MEDIUM_BLOB:statistic = STAT_TEXT_TYPE_FETCHED_BLOB; break;
 					case MYSQL_TYPE_LONG_BLOB:	statistic = STAT_TEXT_TYPE_FETCHED_BLOB; break;
 					case MYSQL_TYPE_BLOB:		statistic = STAT_TEXT_TYPE_FETCHED_BLOB; break;
+					case MYSQL_TYPE_VECTOR:		statistic = STAT_TEXT_TYPE_FETCHED_BLOB; break;
 					case MYSQL_TYPE_VAR_STRING:	statistic = STAT_TEXT_TYPE_FETCHED_STRING; break;
 					case MYSQL_TYPE_STRING:		statistic = STAT_TEXT_TYPE_FETCHED_STRING; break;
 					case MYSQL_TYPE_GEOMETRY:	statistic = STAT_TEXT_TYPE_FETCHED_GEOMETRY; break;
@@ -1633,7 +1643,7 @@ php_mysqlnd_rowp_read_text_protocol(MYSQLND_ROW_BUFFER * row_buffer, zval * fiel
 				if (Z_TYPE_P(current_field) == IS_LONG && !as_int_or_float) {
 					/* we are using the text protocol, so convert to string */
 					char tmp[22];
-					const size_t tmp_len = sprintf((char *)&tmp, ZEND_ULONG_FMT, Z_LVAL_P(current_field));
+					const size_t tmp_len = snprintf(tmp, sizeof(tmp), ZEND_ULONG_FMT, Z_LVAL_P(current_field));
 					ZVAL_STRINGL(current_field, tmp, tmp_len);
 				} else if (Z_TYPE_P(current_field) == IS_STRING) {
 					/* nothing to do here, as we want a string and ps_fetch_from_1_to_8_bytes() has given us one */

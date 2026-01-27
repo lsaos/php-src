@@ -12,12 +12,10 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_DlTestSuperClass_test arginfo_dl_test_test2
 
-
 ZEND_FUNCTION(dl_test_test1);
 ZEND_FUNCTION(dl_test_test2);
 ZEND_METHOD(DlTest, test);
 ZEND_METHOD(DlTestSuperClass, test);
-
 
 static const zend_function_entry ext_functions[] = {
 	ZEND_FE(dl_test_test1, arginfo_dl_test_test1)
@@ -25,25 +23,13 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE_END
 };
 
-
 static const zend_function_entry class_DlTest_methods[] = {
 	ZEND_ME(DlTest, test, arginfo_class_DlTest_test, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 
-
 static const zend_function_entry class_DlTestSuperClass_methods[] = {
 	ZEND_ME(DlTestSuperClass, test, arginfo_class_DlTestSuperClass_test, ZEND_ACC_PUBLIC)
-	ZEND_FE_END
-};
-
-
-static const zend_function_entry class_DlTestSubClass_methods[] = {
-	ZEND_FE_END
-};
-
-
-static const zend_function_entry class_DlTestAliasedClass_methods[] = {
 	ZEND_FE_END
 };
 
@@ -52,7 +38,7 @@ static zend_class_entry *register_class_DlTest(void)
 	zend_class_entry ce, *class_entry;
 
 	INIT_CLASS_ENTRY(ce, "DlTest", class_DlTest_methods);
-	class_entry = zend_register_internal_class_ex(&ce, NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, 0);
 
 	return class_entry;
 }
@@ -62,7 +48,7 @@ static zend_class_entry *register_class_DlTestSuperClass(void)
 	zend_class_entry ce, *class_entry;
 
 	INIT_CLASS_ENTRY(ce, "DlTestSuperClass", class_DlTestSuperClass_methods);
-	class_entry = zend_register_internal_class_ex(&ce, NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, 0);
 
 	zval property_a_default_value;
 	ZVAL_UNDEF(&property_a_default_value);
@@ -77,8 +63,8 @@ static zend_class_entry *register_class_DlTestSubClass(zend_class_entry *class_e
 {
 	zend_class_entry ce, *class_entry;
 
-	INIT_CLASS_ENTRY(ce, "DlTestSubClass", class_DlTestSubClass_methods);
-	class_entry = zend_register_internal_class_ex(&ce, class_entry_DlTestSuperClass);
+	INIT_CLASS_ENTRY(ce, "DlTestSubClass", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_DlTestSuperClass, 0);
 
 	return class_entry;
 }
@@ -87,8 +73,8 @@ static zend_class_entry *register_class_DlTestAliasedClass(void)
 {
 	zend_class_entry ce, *class_entry;
 
-	INIT_CLASS_ENTRY(ce, "DlTestAliasedClass", class_DlTestAliasedClass_methods);
-	class_entry = zend_register_internal_class_ex(&ce, NULL);
+	INIT_CLASS_ENTRY(ce, "DlTestAliasedClass", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, 0);
 	zend_register_class_alias("DlTestClassAlias", class_entry);
 
 	return class_entry;

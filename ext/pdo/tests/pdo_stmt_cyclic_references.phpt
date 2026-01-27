@@ -31,15 +31,15 @@ class TestRow {
 }
 
 $db = PDOTest::factory();
-$db->exec('CREATE TABLE test(id INT NOT NULL PRIMARY KEY, val VARCHAR(10), val2 VARCHAR(10))');
-$db->exec("INSERT INTO test VALUES(1, 'A', 'AA')");
-$db->exec("INSERT INTO test VALUES(2, 'B', 'BB')");
-$db->exec("INSERT INTO test VALUES(3, 'C', 'CC')");
+$db->exec('CREATE TABLE pdo_stmt_cyclic_ref(id INT NOT NULL PRIMARY KEY, val VARCHAR(10), val2 VARCHAR(10))');
+$db->exec("INSERT INTO pdo_stmt_cyclic_ref VALUES(1, 'A', 'AA')");
+$db->exec("INSERT INTO pdo_stmt_cyclic_ref VALUES(2, 'B', 'BB')");
+$db->exec("INSERT INTO pdo_stmt_cyclic_ref VALUES(3, 'C', 'CC')");
 
 $db->setAttribute(PDO::ATTR_STATEMENT_CLASS, ['CyclicStatement', [new Ref]]);
 
 echo "Column fetch:\n";
-$stmt = $db->query('SELECT id, val2, val FROM test');
+$stmt = $db->query('SELECT id, val2, val FROM pdo_stmt_cyclic_ref');
 $stmt->ref->stmt = $stmt;
 $stmt->setFetchMode(PDO::FETCH_COLUMN, 2);
 foreach($stmt as $obj) {
@@ -47,7 +47,7 @@ foreach($stmt as $obj) {
 }
 
 echo "Class fetch:\n";
-$stmt = $db->query('SELECT id, val2, val FROM test');
+$stmt = $db->query('SELECT id, val2, val FROM pdo_stmt_cyclic_ref');
 $stmt->ref->stmt = $stmt;
 $stmt->setFetchMode(PDO::FETCH_CLASS, 'TestRow', ['Hello world']);
 foreach($stmt as $obj) {
@@ -55,13 +55,19 @@ foreach($stmt as $obj) {
 }
 
 echo "Fetch into:\n";
-$stmt = $db->query('SELECT id, val2, val FROM test');
+$stmt = $db->query('SELECT id, val2, val FROM pdo_stmt_cyclic_ref');
 $stmt->ref->stmt = $stmt;
 $stmt->setFetchMode(PDO::FETCH_INTO, new TestRow('I am being fetch into'));
 foreach($stmt as $obj) {
     var_dump($obj);
 }
 
+?>
+--CLEAN--
+<?php
+require_once getenv('REDIR_TEST_DIR') . 'pdo_test.inc';
+$db = PDOTest::factory();
+PDOTest::dropTableIfExists($db, "pdo_stmt_cyclic_ref");
 ?>
 --EXPECTF--
 Column fetch:

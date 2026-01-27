@@ -55,7 +55,7 @@ void fpm_request_accepting(void)
 	fpm_scoreboard_proc_release(proc);
 
 	/* idle++, active-- */
-	fpm_scoreboard_update_commit(1, -1, 0, 0, 0, 0, 0, FPM_SCOREBOARD_ACTION_INC, NULL);
+	fpm_scoreboard_update_commit(1, -1, 0, 0, 0, 0, 0, 0, FPM_SCOREBOARD_ACTION_INC, NULL);
 }
 
 void fpm_request_reading_headers(void)
@@ -99,7 +99,7 @@ void fpm_request_reading_headers(void)
 	fpm_scoreboard_proc_release(proc);
 
 	/* idle--, active++, request++ */
-	fpm_scoreboard_update_commit(-1, 1, 0, 0, 1, 0, 0, FPM_SCOREBOARD_ACTION_INC, NULL);
+	fpm_scoreboard_update_commit(-1, 1, 0, 0, 1, 0, 0, 0, FPM_SCOREBOARD_ACTION_INC, NULL);
 }
 
 void fpm_request_info(void)
@@ -200,6 +200,9 @@ void fpm_request_end(void)
 #endif
 	proc->memory = memory;
 	fpm_scoreboard_proc_release(proc);
+
+	/* memory_peak */
+	fpm_scoreboard_update_commit(-1, -1, -1, -1, -1, -1, -1, proc->memory, FPM_SCOREBOARD_ACTION_SET, NULL);
 }
 
 void fpm_request_finished(void)

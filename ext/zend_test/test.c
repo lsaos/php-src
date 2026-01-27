@@ -14,6 +14,7 @@
   +----------------------------------------------------------------------+
 */
 
+#include "zend_modules.h"
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
@@ -35,6 +36,7 @@
 #include "test_arginfo.h"
 #include "zend_call_stack.h"
 #include "zend_exceptions.h"
+#include "zend_mm_custom_handlers.h"
 
 // `php.h` sets `NDEBUG` when not `PHP_DEBUG` which will make `assert()` from
 // assert.h a no-op. In order to have `assert()` working on NDEBUG builds, we
@@ -45,7 +47,6 @@
 #if defined(HAVE_LIBXML) && !defined(PHP_WIN32)
 # include <libxml/globals.h>
 # include <libxml/parser.h>
-# include "ext/dom/php_dom.h"
 #endif
 
 ZEND_DECLARE_MODULE_GLOBALS(zend_test)
@@ -53,12 +54,14 @@ ZEND_DECLARE_MODULE_GLOBALS(zend_test)
 static zend_class_entry *zend_test_interface;
 static zend_class_entry *zend_test_class;
 static zend_class_entry *zend_test_child_class;
+static zend_class_entry *zend_test_gen_stub_flag_compatibility_test;
 static zend_class_entry *zend_attribute_test_class;
 static zend_class_entry *zend_test_trait;
 static zend_class_entry *zend_test_attribute;
 static zend_class_entry *zend_test_repeatable_attribute;
 static zend_class_entry *zend_test_parameter_attribute;
 static zend_class_entry *zend_test_property_attribute;
+static zend_class_entry *zend_test_attribute_with_arguments;
 static zend_class_entry *zend_test_class_with_method_with_parameter_attribute;
 static zend_class_entry *zend_test_child_class_with_method_with_parameter_attribute;
 static zend_class_entry *zend_test_class_with_property_attribute;
@@ -71,6 +74,7 @@ static zend_class_entry *zend_test_ns2_ns_foo_class;
 static zend_class_entry *zend_test_unit_enum;
 static zend_class_entry *zend_test_string_enum;
 static zend_class_entry *zend_test_int_enum;
+static zend_class_entry *zend_test_enum_with_interface;
 static zend_class_entry *zend_test_magic_call;
 static zend_object_handlers zend_test_class_handlers;
 
@@ -95,6 +99,8 @@ static ZEND_FUNCTION(zend_test_array_return)
 static ZEND_FUNCTION(zend_test_nullable_array_return)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
+
+	RETURN_NULL();
 }
 
 static ZEND_FUNCTION(zend_test_void_return)
@@ -118,6 +124,11 @@ static ZEND_FUNCTION(zend_test_deprecated)
 	zval *arg1;
 
 	zend_parse_parameters(ZEND_NUM_ARGS(), "|z", &arg1);
+}
+
+static ZEND_FUNCTION(zend_test_deprecated_attr)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
 }
 
 /* Create a string without terminating null byte. Must be terminated with
@@ -378,14 +389,14 @@ static ZEND_FUNCTION(zend_test_override_libxml_global_state)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	PHP_LIBXML_IGNORE_DEPRECATIONS_START
+	ZEND_DIAGNOSTIC_IGNORED_START("-Wdeprecated-declarations")
 	xmlLoadExtDtdDefaultValue = 1;
 	xmlDoValidityCheckingDefaultValue = 1;
 	(void) xmlPedanticParserDefault(1);
 	(void) xmlSubstituteEntitiesDefault(1);
 	(void) xmlLineNumbersDefault(1);
 	(void) xmlKeepBlanksDefault(0);
-	PHP_LIBXML_IGNORE_DEPRECATIONS_END
+	ZEND_DIAGNOSTIC_IGNORED_END
 }
 #endif
 
@@ -447,7 +458,7 @@ static ZEND_FUNCTION(zend_call_method)
 	} else if (Z_TYPE_P(class_or_object) == IS_STRING) {
 		ce = zend_lookup_class(Z_STR_P(class_or_object));
 		if (!ce) {
-			zend_error(E_ERROR, "Unknown class '%s'", Z_STRVAL_P(class_or_object));
+			zend_error_noreturn(E_ERROR, "Unknown class '%s'", Z_STRVAL_P(class_or_object));
 			return;
 		}
 	} else {
@@ -457,6 +468,29 @@ static ZEND_FUNCTION(zend_call_method)
 
 	ZEND_ASSERT((argc >= 2) && (argc <= 4));
 	zend_call_method(obj, ce, NULL, ZSTR_VAL(method_name), ZSTR_LEN(method_name), return_value, argc - 2, arg1, arg2);
+}
+
+/* Instantiate a class and run the constructor via object_init_with_constructor */
+static ZEND_FUNCTION(zend_object_init_with_constructor)
+{
+	zend_class_entry *ce = NULL;
+	zval *args;
+	uint32_t num_args;
+	HashTable *named_args;
+
+	ZEND_PARSE_PARAMETERS_START(1, -1)
+		Z_PARAM_CLASS(ce)
+		Z_PARAM_VARIADIC_WITH_NAMED(args, num_args, named_args)
+	ZEND_PARSE_PARAMETERS_END();
+
+	zval obj;
+	/* We don't use return_value directly to check for memory leaks of the API on failure */
+	zend_result status = object_init_with_constructor(&obj, ce, num_args, args, named_args);
+	if (status == FAILURE) {
+		RETURN_THROWS();
+	}
+	ZEND_ASSERT(!EG(exception));
+	ZVAL_COPY_VALUE(return_value, &obj);
 }
 
 static ZEND_FUNCTION(zend_get_unit_enum)
@@ -551,6 +585,11 @@ static ZEND_FUNCTION(zend_test_parameter_with_attribute)
 	RETURN_LONG(1);
 }
 
+static ZEND_FUNCTION(zend_test_attribute_with_named_argument)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+}
+
 #ifdef ZEND_CHECK_STACK_LIMIT
 static ZEND_FUNCTION(zend_test_zend_call_stack_get)
 {
@@ -642,7 +681,7 @@ static bool has_opline(zend_execute_data *execute_data)
 	;
 }
 
-void * zend_test_custom_malloc(size_t len)
+void * zend_test_custom_malloc(size_t len ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
 	if (has_opline(EG(current_execute_data))) {
 		assert(EG(current_execute_data)->opline->lineno != (uint32_t)-1);
@@ -650,7 +689,7 @@ void * zend_test_custom_malloc(size_t len)
 	return _zend_mm_alloc(ZT_G(zend_orig_heap), len ZEND_FILE_LINE_EMPTY_CC ZEND_FILE_LINE_EMPTY_CC);
 }
 
-void zend_test_custom_free(void *ptr)
+void zend_test_custom_free(void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
 	if (has_opline(EG(current_execute_data))) {
 		assert(EG(current_execute_data)->opline->lineno != (uint32_t)-1);
@@ -658,7 +697,7 @@ void zend_test_custom_free(void *ptr)
 	_zend_mm_free(ZT_G(zend_orig_heap), ptr ZEND_FILE_LINE_EMPTY_CC ZEND_FILE_LINE_EMPTY_CC);
 }
 
-void * zend_test_custom_realloc(void * ptr, size_t len)
+void * zend_test_custom_realloc(void * ptr, size_t len ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
 	if (has_opline(EG(current_execute_data))) {
 		assert(EG(current_execute_data)->opline->lineno != (uint32_t)-1);
@@ -738,7 +777,7 @@ static ZEND_FUNCTION(get_open_basedir)
 static ZEND_FUNCTION(zend_test_is_pcre_bundled)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
-#if HAVE_BUNDLED_PCRE
+#ifdef HAVE_BUNDLED_PCRE
 	RETURN_TRUE;
 #else
 	RETURN_FALSE;
@@ -822,22 +861,23 @@ static zend_object *zend_test_class_new(zend_class_entry *class_type)
 static zend_function *zend_test_class_method_get(zend_object **object, zend_string *name, const zval *key)
 {
 	if (zend_string_equals_literal_ci(name, "test")) {
-	    zend_internal_function *fptr;
+		zend_internal_function *fptr;
 
-	    if (EXPECTED(EG(trampoline).common.function_name == NULL)) {
-		    fptr = (zend_internal_function *) &EG(trampoline);
-	    } else {
-		    fptr = emalloc(sizeof(zend_internal_function));
+		if (EXPECTED(EG(trampoline).common.function_name == NULL)) {
+			fptr = (zend_internal_function *) &EG(trampoline);
+		} else {
+			fptr = emalloc(sizeof(zend_internal_function));
 	    }
-	    memset(fptr, 0, sizeof(zend_internal_function));
-	    fptr->type = ZEND_INTERNAL_FUNCTION;
-	    fptr->num_args = 0;
-	    fptr->scope = (*object)->ce;
-	    fptr->fn_flags = ZEND_ACC_CALL_VIA_HANDLER;
-	    fptr->function_name = zend_string_copy(name);
-	    fptr->handler = ZEND_FN(zend_test_func);
+		memset(fptr, 0, sizeof(zend_internal_function));
+		fptr->type = ZEND_INTERNAL_FUNCTION;
+		fptr->num_args = 0;
+		fptr->scope = (*object)->ce;
+		fptr->fn_flags = ZEND_ACC_CALL_VIA_HANDLER;
+		fptr->function_name = zend_string_copy(name);
+		fptr->handler = ZEND_FN(zend_test_func);
+		fptr->doc_comment = NULL;
 
-	    return (zend_function*)fptr;
+		return (zend_function*)fptr;
 	}
 	return zend_std_get_method(object, name, key);
 }
@@ -859,6 +899,7 @@ static zend_function *zend_test_class_static_method_get(zend_class_entry *ce, ze
 		fptr->fn_flags = ZEND_ACC_CALL_VIA_HANDLER|ZEND_ACC_STATIC;
 		fptr->function_name = zend_string_copy(name);
 		fptr->handler = ZEND_FN(zend_test_func);
+		fptr->doc_comment = NULL;
 
 		return (zend_function*)fptr;
 	}
@@ -990,6 +1031,19 @@ static ZEND_METHOD(ZendTestPropertyAttribute, __construct)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ZVAL_STR_COPY(OBJ_PROP_NUM(Z_OBJ_P(ZEND_THIS), 0), parameter);
+}
+
+static ZEND_METHOD(ZendTestAttributeWithArguments, __construct)
+{
+	zval *arg;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_ZVAL(arg)
+	ZEND_PARSE_PARAMETERS_END();
+
+	zend_string *property_name = zend_string_init("arg", strlen("arg"), 0);
+	zend_update_property_ex(zend_test_attribute_with_arguments, Z_OBJ_P(ZEND_THIS), property_name, arg);
+	zend_string_release(property_name);
 }
 
 static ZEND_METHOD(ZendTestClassWithMethodWithParameterAttribute, no_override)
@@ -1219,6 +1273,8 @@ PHP_MINIT_FUNCTION(zend_test)
 	memcpy(&zend_test_class_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	zend_test_class_handlers.get_method = zend_test_class_method_get;
 
+	zend_test_gen_stub_flag_compatibility_test = register_class_ZendTestGenStubFlagCompatibilityTest();
+
 	zend_attribute_test_class = register_class_ZendAttributeTest();
 
 	zend_test_trait = register_class__ZendTestTrait();
@@ -1240,6 +1296,9 @@ PHP_MINIT_FUNCTION(zend_test)
 	zend_test_property_attribute = register_class_ZendTestPropertyAttribute();
 	zend_mark_internal_attribute(zend_test_property_attribute);
 
+	zend_test_attribute_with_arguments = register_class_ZendTestAttributeWithArguments();
+	zend_mark_internal_attribute(zend_test_attribute_with_arguments);
+
 	zend_test_class_with_method_with_parameter_attribute = register_class_ZendTestClassWithMethodWithParameterAttribute();
 	zend_test_child_class_with_method_with_parameter_attribute = register_class_ZendTestChildClassWithMethodWithParameterAttribute(zend_test_class_with_method_with_parameter_attribute);
 
@@ -1260,6 +1319,7 @@ PHP_MINIT_FUNCTION(zend_test)
 	zend_test_unit_enum = register_class_ZendTestUnitEnum();
 	zend_test_string_enum = register_class_ZendTestStringEnum();
 	zend_test_int_enum = register_class_ZendTestIntEnum();
+	zend_test_enum_with_interface = register_class_ZendTestEnumWithInterface(zend_test_interface);
 
 	zend_test_magic_call = register_class__ZendTestMagicCall();
 
@@ -1285,6 +1345,7 @@ PHP_MINIT_FUNCTION(zend_test)
 	}
 
 	zend_test_observer_init(INIT_FUNC_ARGS_PASSTHRU);
+	zend_test_mm_custom_handlers_minit(INIT_FUNC_ARGS_PASSTHRU);
 	zend_test_fiber_init();
 	zend_test_iterators_init();
 	zend_test_object_handlers_init();
@@ -1303,7 +1364,7 @@ PHP_MSHUTDOWN_FUNCTION(zend_test)
 	zend_test_observer_shutdown(SHUTDOWN_FUNC_ARGS_PASSTHRU);
 
 	if (ZT_G(print_stderr_mshutdown)) {
-		fprintf(stderr, "[zend-test] MSHUTDOWN\n");
+		fprintf(stderr, "[zend_test] MSHUTDOWN\n");
 	}
 
 	return SUCCESS;
@@ -1314,6 +1375,7 @@ PHP_RINIT_FUNCTION(zend_test)
 	ALLOC_HASHTABLE(ZT_G(global_weakmap));
 	zend_hash_init(ZT_G(global_weakmap), 8, NULL, ZVAL_PTR_DTOR, 0);
 	ZT_G(observer_nesting_depth) = 0;
+	zend_test_mm_custom_handlers_rinit();
 	return SUCCESS;
 }
 
@@ -1332,6 +1394,7 @@ PHP_RSHUTDOWN_FUNCTION(zend_test)
 		zend_mm_set_heap(ZT_G(zend_orig_heap));
 	}
 
+	zend_test_mm_custom_handlers_rshutdown();
 	return SUCCESS;
 }
 
@@ -1404,8 +1467,7 @@ PHP_ZEND_TEST_API struct bug79096 bug79096(void)
 
 PHP_ZEND_TEST_API void bug79532(off_t *array, size_t elems)
 {
-	int i;
-	for (i = 0; i < elems; i++) {
+	for (size_t i = 0; i < elems; i++) {
 		array[i] = i;
 	}
 }

@@ -17,14 +17,14 @@
 */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
-#include "pdo/php_pdo.h"
-#include "pdo/php_pdo_driver.h"
+#include "ext/pdo/php_pdo.h"
+#include "ext/pdo/php_pdo_driver.h"
 #include "php_pdo_mysql.h"
 #include "php_pdo_mysql_int.h"
 
@@ -750,7 +750,7 @@ static char *type_to_name_native(int type) /* {{{ */
 		PDO_MYSQL_NATIVE_TYPE_NAME(NEWDATE)
 #endif
 		/* The following 2 don't have BC FIELD_TYPE_* aliases. */
-#if MYSQL_VERSION_ID >= 90000 && !defined(MARIADB_BASE_VERSION) /* TODO: mysqlnd support (added in 8.4 via a1ab846231aeff49c0441a30ebd44463fc7825b1) */
+#if (MYSQL_VERSION_ID >= 90000 && !defined(MARIADB_BASE_VERSION)) || defined(PDO_USE_MYSQLND)
 		PDO_MYSQL_NATIVE_TYPE_NAME(VECTOR)
 #endif
 #if MYSQL_VERSION_ID >= 50708 || defined(PDO_USE_MYSQLND)

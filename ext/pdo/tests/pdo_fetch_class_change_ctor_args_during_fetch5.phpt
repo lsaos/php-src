@@ -22,14 +22,13 @@ class B {
     public function __construct() {}
 }
 
-// TODO Rename test table to pdo_fetch_class_change_ctor_five in PHP-8.4
-$db->exec('CREATE TABLE test(id int NOT NULL PRIMARY KEY, val1 VARCHAR(10), val2 VARCHAR(10))');
-$db->exec("INSERT INTO test VALUES(1, 'A', 'alpha')");
-$db->exec("INSERT INTO test VALUES(2, 'B', 'beta')");
-$db->exec("INSERT INTO test VALUES(3, 'C', 'gamma')");
-$db->exec("INSERT INTO test VALUES(4, 'D', 'delta')");
+$db->exec('CREATE TABLE pdo_fetch_class_change_ctor_five(id int NOT NULL PRIMARY KEY, val1 VARCHAR(10), val2 VARCHAR(10))');
+$db->exec("INSERT INTO pdo_fetch_class_change_ctor_five VALUES(1, 'A', 'alpha')");
+$db->exec("INSERT INTO pdo_fetch_class_change_ctor_five VALUES(2, 'B', 'beta')");
+$db->exec("INSERT INTO pdo_fetch_class_change_ctor_five VALUES(3, 'C', 'gamma')");
+$db->exec("INSERT INTO pdo_fetch_class_change_ctor_five VALUES(4, 'D', 'delta')");
 
-$stmt = $db->prepare('SELECT val1, val2 FROM test');
+$stmt = $db->prepare('SELECT val1, val2 FROM pdo_fetch_class_change_ctor_five');
 $stmt->execute();
 
 function stuffingErrorHandler(int $errno, string $errstr, string $errfile, int $errline) {
@@ -41,6 +40,12 @@ set_error_handler(stuffingErrorHandler(...));
 
 var_dump($stmt->fetchAll(PDO::FETCH_CLASS|PDO::FETCH_SERIALIZE, 'B', [$stmt]));
 
+?>
+--CLEAN--
+<?php
+require_once getenv('REDIR_TEST_DIR') . 'pdo_test.inc';
+$db = PDOTest::factory();
+PDOTest::dropTableIfExists($db, "pdo_fetch_class_change_ctor_five");
 ?>
 --EXPECTF--
 PDOStatement::fetchAll(): The PDO::FETCH_SERIALIZE mode is deprecated

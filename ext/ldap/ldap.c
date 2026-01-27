@@ -23,7 +23,7 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
@@ -38,7 +38,6 @@
 #ifdef PHP_WIN32
 #include <string.h>
 #include "config.w32.h"
-#undef WINDOWS
 #undef strcasecmp
 #undef strncasecmp
 #define WINSOCK 1
@@ -961,8 +960,11 @@ PHP_FUNCTION(ldap_connect)
 	ldap_linkdata *ld;
 	LDAP *ldap = NULL;
 
-	if (ZEND_NUM_ARGS() == 2) {
-	    zend_error(E_DEPRECATED, "Usage of ldap_connect with two arguments is deprecated");
+	if (ZEND_NUM_ARGS() > 2) {
+	    zend_error(E_DEPRECATED, "Calling ldap_connect() with Oracle-specific arguments is deprecated, "
+			"use ldap_connect_wallet() instead");
+	} else if (ZEND_NUM_ARGS() == 2) {
+		zend_error(E_DEPRECATED, "Usage of ldap_connect with two arguments is deprecated");
 	}
 
 #ifdef HAVE_ORALDAP
@@ -1555,7 +1557,7 @@ static void php_ldap_do_search(INTERNAL_FUNCTION_PARAMETERS, int scope)
 
 		nlinks = zend_hash_num_elements(Z_ARRVAL_P(link));
 		if (nlinks == 0) {
-			zend_argument_value_error(1, "cannot be empty");
+			zend_argument_must_not_be_empty_error(1);
 			ret = 0;
 			goto cleanup;
 		}
@@ -1950,12 +1952,12 @@ PHP_FUNCTION(ldap_get_entries)
 			add_index_string(&tmp1, num_attrib, attribute);
 
 			num_attrib++;
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 			ldap_memfree(attribute);
 #endif
 			attribute = ldap_next_attribute(ldap, ldap_result_entry, ber);
 		}
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		if (ber != NULL) {
 			ber_free(ber, 0);
 		}
@@ -1968,7 +1970,7 @@ PHP_FUNCTION(ldap_get_entries)
 		} else {
 			add_assoc_null(&tmp1, "dn");
 		}
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		ldap_memfree(dn);
 #else
 		free(dn);
@@ -2006,7 +2008,7 @@ PHP_FUNCTION(ldap_first_attribute)
 		RETURN_FALSE;
 	} else {
 		RETVAL_STRING(attribute);
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		ldap_memfree(attribute);
 #endif
 	}
@@ -2036,7 +2038,7 @@ PHP_FUNCTION(ldap_next_attribute)
 	}
 
 	if ((attribute = ldap_next_attribute(ld->link, resultentry->data, resultentry->ber)) == NULL) {
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		if (resultentry->ber != NULL) {
 			ber_free(resultentry->ber, 0);
 			resultentry->ber = NULL;
@@ -2045,7 +2047,7 @@ PHP_FUNCTION(ldap_next_attribute)
 		RETURN_FALSE;
 	} else {
 		RETVAL_STRING(attribute);
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		ldap_memfree(attribute);
 #endif
 	}
@@ -2092,12 +2094,12 @@ PHP_FUNCTION(ldap_get_attributes)
 		add_index_string(return_value, num_attrib, attribute);
 
 		num_attrib++;
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		ldap_memfree(attribute);
 #endif
 		attribute = ldap_next_attribute(ld->link, resultentry->data, ber);
 	}
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 	if (ber != NULL) {
 		ber_free(ber, 0);
 	}
@@ -2165,7 +2167,7 @@ PHP_FUNCTION(ldap_get_dn)
 	text = ldap_get_dn(ld->link, resultentry->data);
 	if (text != NULL) {
 		RETVAL_STRING(text);
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		ldap_memfree(text);
 #else
 		free(text);
@@ -2222,7 +2224,7 @@ PHP_FUNCTION(ldap_dn2ufn)
 
 	if (ufn != NULL) {
 		RETVAL_STRING(ufn);
-#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP) || WINDOWS
+#if (LDAP_API_VERSION > 2000) || defined(HAVE_ORALDAP)
 		ldap_memfree(ufn);
 #endif
 	} else {
@@ -2314,7 +2316,7 @@ static void php_ldap_do_modify(INTERNAL_FUNCTION_PARAMETERS, int oper, int ext)
 			ldap_mods[i]->mod_bvalues[0]->bv_len = Z_STRLEN_P(value);
 		} else {
 			if (!php_ldap_is_numerically_indexed_array(Z_ARRVAL_P(value))) {
-				zend_argument_value_error(3, "must be an array with numeric keys");
+				zend_argument_value_error(3, "attribute \"%s\" must be an array with numeric keys", ZSTR_VAL(attribute));
 				RETVAL_FALSE;
 				num_berval[i] = 0;
 				num_attribs = i + 1;
@@ -2763,7 +2765,7 @@ PHP_FUNCTION(ldap_modify_batch)
 					zend_hash_internal_pointer_reset(Z_ARRVAL_P(modinfo));
 					num_modvals = zend_hash_num_elements(Z_ARRVAL_P(modinfo));
 					if (num_modvals == 0) {
-						zend_value_error("%s(): Option \"" LDAP_MODIFY_BATCH_VALUES "\" cannot be empty", get_active_function_name());
+						zend_value_error("%s(): Option \"" LDAP_MODIFY_BATCH_VALUES "\" must not be empty", get_active_function_name());
 						RETURN_THROWS();
 					}
 
@@ -3062,6 +3064,9 @@ PHP_FUNCTION(ldap_get_option)
 #ifdef LDAP_OPT_X_TLS_PROTOCOL_MIN
 	case LDAP_OPT_X_TLS_PROTOCOL_MIN:
 #endif
+#ifdef LDAP_OPT_X_TLS_PROTOCOL_MAX
+	case LDAP_OPT_X_TLS_PROTOCOL_MAX:
+#endif
 #ifdef LDAP_OPT_X_KEEPALIVE_IDLE
 	case LDAP_OPT_X_KEEPALIVE_IDLE:
 	case LDAP_OPT_X_KEEPALIVE_PROBES:
@@ -3221,6 +3226,9 @@ PHP_FUNCTION(ldap_set_option)
 #endif
 #ifdef LDAP_OPT_X_TLS_PROTOCOL_MIN
 	case LDAP_OPT_X_TLS_PROTOCOL_MIN:
+#endif
+#ifdef LDAP_OPT_X_TLS_PROTOCOL_MAX
+	case LDAP_OPT_X_TLS_PROTOCOL_MAX:
 #endif
 		/* TLS option change requires resetting TLS context */
 		LDAPG(tls_newctx) = true;
@@ -4062,12 +4070,19 @@ static void php_ldap_exop(INTERNAL_FUNCTION_PARAMETERS, bool force_sync) {
 	LDAPControl **lserverctrls = NULL;
 	int rc, msgid;
 
+	if (force_sync == false && ZEND_NUM_ARGS() > 4) {
+		zend_error(E_DEPRECATED, "Calling ldap_exop() with more than 4 arguments is deprecated, use ldap_exop_sync() instead");
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
+	}
+
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "OP|S!a!zz", &link, ldap_link_ce, &reqoid, &reqdata, &serverctrls, &retdata, &retoid) != SUCCESS) {
 		RETURN_THROWS();
 	}
 
 	if (ZSTR_LEN(reqoid) == 0) {
-		zend_argument_value_error(2, "must not be empty");
+		zend_argument_must_not_be_empty_error(2);
 		RETURN_THROWS();
 	}
 

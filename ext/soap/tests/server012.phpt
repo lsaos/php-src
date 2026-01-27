@@ -10,8 +10,6 @@ if (PHP_OS_FAMILY === "Windows") {
 soap
 --GET--
 WSDL
---ENV--
-LSAN_OPTIONS=detect_leaks=0
 --FILE--
 <?php
 function Add($x,$y) {

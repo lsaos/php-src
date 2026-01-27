@@ -19,7 +19,7 @@
 /* The PDO Statement Handle Class */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
@@ -37,7 +37,7 @@
 #define PHP_STMT_GET_OBJ \
 	pdo_stmt_t *stmt = Z_PDO_STMT_P(ZEND_THIS); \
 	if (!stmt->dbh) { \
-		zend_throw_error(NULL, "PDO object is uninitialized"); \
+		zend_throw_error(NULL, "%s object is uninitialized", ZSTR_VAL(Z_OBJ(EX(This))->ce->name)); \
 		RETURN_THROWS(); \
 	} \
 
@@ -714,7 +714,7 @@ static void do_fetch_opt_finish(pdo_stmt_t *stmt, int free_ctor_agrs) /* {{{ */
 /* }}} */
 
 /* perform a fetch.
- * If return_value is not null, store values into it according to HOW. */
+ * Stores values into return_value according to HOW. */
 static bool do_fetch(pdo_stmt_t *stmt, zval *return_value, enum pdo_fetch_type how, enum pdo_fetch_orientation ori, zend_long offset, zval *return_all) /* {{{ */
 {
 	int flags, idx, old_arg_count = 0;
@@ -742,11 +742,6 @@ static bool do_fetch(pdo_stmt_t *stmt, zval *return_value, enum pdo_fetch_type h
 		colno = 1;
 	} else {
 		colno = stmt->fetch.column;
-	}
-
-	/* If no return value we are done */
-	if (!return_value) {
-		return true;
 	}
 
 	if (how == PDO_FETCH_LAZY) {
@@ -1446,7 +1441,7 @@ static void register_bound_param(INTERNAL_FUNCTION_PARAMETERS, int is_param) /* 
 
 	if (param.name) {
 		if (ZSTR_LEN(param.name) == 0) {
-			zend_argument_value_error(1, "cannot be empty");
+			zend_argument_must_not_be_empty_error(1);
 			RETURN_THROWS();
 		}
 		param.paramno = -1;
@@ -1494,7 +1489,7 @@ PHP_METHOD(PDOStatement, bindValue)
 
 	if (param.name) {
 		if (ZSTR_LEN(param.name) == 0) {
-			zend_argument_value_error(1, "cannot be empty");
+			zend_argument_must_not_be_empty_error(1);
 			RETURN_THROWS();
 		}
 		param.paramno = -1;
@@ -2197,7 +2192,7 @@ static void pdo_stmt_iter_dtor(zend_object_iterator *iter)
 	}
 }
 
-static int pdo_stmt_iter_valid(zend_object_iterator *iter)
+static zend_result pdo_stmt_iter_valid(zend_object_iterator *iter)
 {
 	struct php_pdo_iterator *I = (struct php_pdo_iterator*)iter;
 
@@ -2269,7 +2264,7 @@ zend_object_iterator *pdo_stmt_iter_get(zend_class_entry *ce, zval *object, int 
 
 	pdo_stmt_t *stmt = Z_PDO_STMT_P(object);
 	if (!stmt->dbh) {
-		zend_throw_error(NULL, "PDO object is uninitialized");
+		zend_throw_error(NULL, "%s object is uninitialized", ZSTR_VAL(ce->name));
 		return NULL;
 	}
 
@@ -2387,6 +2382,7 @@ static void row_dim_write(zend_object *object, zval *member, zval *value)
 	}
 }
 
+// todo: make row_prop_exists return bool as well
 static int row_prop_exists(zend_object *object, zend_string *name, int check_empty, void **cache_slot)
 {
 	pdo_row_t *row = (pdo_row_t *)object;
@@ -2406,11 +2402,14 @@ static int row_prop_exists(zend_object *object, zend_string *name, int check_emp
 		return false;
 	}
 	ZEND_ASSERT(retval == &tmp_val);
-	int res = check_empty ? i_zend_is_true(retval) : Z_TYPE(tmp_val) != IS_NULL;
+	bool res = check_empty ? i_zend_is_true(retval) : Z_TYPE(tmp_val) != IS_NULL;
 	zval_ptr_dtor_nogc(retval);
+
 	return res;
 }
 
+
+// todo: make row_dim_exists return bool as well
 static int row_dim_exists(zend_object *object, zval *offset, int check_empty)
 {
 	if (Z_TYPE_P(offset) == IS_LONG) {
@@ -2429,7 +2428,7 @@ static int row_dim_exists(zend_object *object, zval *offset, int check_empty)
 			return false;
 		}
 		ZEND_ASSERT(retval == &tmp_val);
-		int res = check_empty ? i_zend_is_true(retval) : Z_TYPE(tmp_val) != IS_NULL;
+		bool res = check_empty ? i_zend_is_true(retval) : Z_TYPE(tmp_val) != IS_NULL;
 		zval_ptr_dtor_nogc(retval);
 		return res;
 	} else {
@@ -2465,10 +2464,7 @@ static HashTable *row_get_properties_for(zend_object *object, zend_prop_purpose 
 		return zend_std_get_properties_for(object, purpose);
 	}
 
-	if (!stmt->std.properties) {
-		rebuild_object_properties(&stmt->std);
-	}
-	props = zend_array_dup(stmt->std.properties);
+	props = zend_array_dup(zend_std_get_properties_ex(&stmt->std));
 	for (i = 0; i < stmt->column_count; i++) {
 		if (zend_string_equals_literal(stmt->columns[i].name, "queryString")) {
 			continue;

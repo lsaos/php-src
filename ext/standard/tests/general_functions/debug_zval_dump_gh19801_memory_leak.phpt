@@ -23,7 +23,7 @@ debug_zval_dump($b);
 object(stdClass)#2 (1) refcount(%d){
   ["a"]=>
   reference refcount(%d) {
-    array(1) refcount(%d){
+    array(1) packed refcount(%d){
       [0]=>
       object(class@anonymous)#1 (0) refcount(%d){
       }

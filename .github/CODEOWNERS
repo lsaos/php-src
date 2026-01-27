@@ -25,7 +25,6 @@
 /ext/gd @devnexen
 /ext/gettext @devnexen
 /ext/gmp @Girgias
-/ext/imap @Girgias
 /ext/intl @devnexen
 /ext/json @bukka
 /ext/libxml @ndossche

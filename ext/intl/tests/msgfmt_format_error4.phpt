@@ -20,6 +20,7 @@ var_dump($mf->format(array("foo" => new class {
         return str_repeat("\x80", random_int(1, 1));
     }
 })));
+?>
 --EXPECTF--
 Warning: MessageFormatter::format(): Invalid UTF-8 data in argument key: '€' in %s on line %d
 bool(false)

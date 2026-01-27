@@ -11,9 +11,9 @@ $zip = zip_read($zip);
 var_dump(zip_entry_name($zip));
 ?>
 --EXPECTF--
-Deprecated: Function zip_open() is deprecated in %s on line %d
+Deprecated: Function zip_open() is deprecated since 8.0, use ZipArchive::open() instead in %s on line %d
 
-Deprecated: Function zip_read() is deprecated in %s on line %d
+Deprecated: Function zip_read() is deprecated since 8.0, use ZipArchive::statIndex() instead in %s on line %d
 
-Deprecated: Function zip_entry_name() is deprecated in %s on line %d
+Deprecated: Function zip_entry_name() is deprecated since 8.0, use ZipArchive::statIndex() instead in %s on line %d
 bool(false)

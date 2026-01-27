@@ -75,13 +75,11 @@ static char *create_name_with_username(const char *name, size_t unique_id)
 	char *p = newname;
 	p += strlcpy(newname, name, MAXPATHLEN + 1);
 	*(p++) = '@';
-	memcpy(p, accel_uname_id, 32);
-	p += 32;
+	p = zend_mempcpy(p, accel_uname_id, 32);
 	*(p++) = '@';
 	p += strlcpy(p, sapi_module.name, 21);
 	*(p++) = '@';
-	memcpy(p, zend_system_id, 32);
-	p += 32;
+	p = zend_mempcpy(p, zend_system_id, 32);
 	if (unique_id) {
 		p += snprintf(p, sizeof("ffffffffffffffff"), "%zx", unique_id) + 1;
 	} else {

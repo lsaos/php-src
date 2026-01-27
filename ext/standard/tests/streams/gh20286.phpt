@@ -34,10 +34,10 @@ stream_wrapper_register('lib', lib::class);
 include('lib://test.php');
 ?>
 --EXPECTF--
-Fatal error: Cannot redeclare a() (previously declared in %s:%d) in %s on line %d
+Fatal error: Cannot redeclare function a() (previously declared in %s:%d) in %s on line %d
 
-Fatal error: Cannot redeclare a() (previously declared in %s on line %d
+Fatal error: Cannot redeclare function a() (previously declared in %s:%d) in %s on line %d
 
-Fatal error: Cannot redeclare a() (previously declared in %s on line %d
+Fatal error: Cannot redeclare function a() (previously declared in %s:%d) in %s on line %d
 
-Fatal error: Cannot redeclare a() (previously declared in %s on line %d
+Fatal error: Cannot redeclare function a() (previously declared in %s:%d) in %s on line %d

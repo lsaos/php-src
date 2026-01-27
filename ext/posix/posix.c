@@ -15,13 +15,12 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
 #include <unistd.h>
 #include "ext/standard/info.h"
-#include "ext/standard/php_string.h"
 #include "php_posix.h"
 #include "main/php_network.h"
 
@@ -40,10 +39,9 @@
 #include <errno.h>
 #include <grp.h>
 #include <pwd.h>
-#ifdef HAVE_SYS_MKDEV_H
+#ifdef MAJOR_IN_MKDEV
 # include <sys/mkdev.h>
-#endif
-#ifdef HAVE_SYS_SYSMACROS_H
+#elif defined(MAJOR_IN_SYSMACROS)
 # include <sys/sysmacros.h>
 #endif
 
@@ -359,7 +357,7 @@ PHP_FUNCTION(posix_uname)
 	add_assoc_string(return_value, "version",  u.version);
 	add_assoc_string(return_value, "machine",  u.machine);
 
-#if defined(_GNU_SOURCE) && !defined(DARWIN) && defined(HAVE_UTSNAME_DOMAINNAME)
+#if defined(_GNU_SOURCE) && defined(HAVE_STRUCT_UTSNAME_DOMAINNAME)
 	add_assoc_string(return_value, "domainname", u.domainname);
 #endif
 }
@@ -418,14 +416,14 @@ PHP_FUNCTION(posix_ctermid)
 /* }}} */
 
 /* Checks if the provides resource is a stream and if it provides a file descriptor */
-static int php_posix_stream_get_fd(zval *zfp, zend_long *ret) /* {{{ */
+static zend_result php_posix_stream_get_fd(zval *zfp, zend_long *ret) /* {{{ */
 {
 	php_stream *stream;
 
 	php_stream_from_zval_no_verify(stream, zfp);
 
 	if (stream == NULL) {
-		return 0;
+		return FAILURE;
 	}
 
 	/* get the fd. php_socket_t is used for FDs, and is shorter than zend_long.
@@ -440,10 +438,10 @@ static int php_posix_stream_get_fd(zval *zfp, zend_long *ret) /* {{{ */
 	} else {
 		php_error_docref(NULL, E_WARNING, "Could not use stream of type '%s'",
 				stream->ops->label);
-		return 0;
+		return FAILURE;
 	}
 	*ret = fd;
-	return 1;
+	return SUCCESS;
 }
 /* }}} */
 
@@ -463,7 +461,7 @@ PHP_FUNCTION(posix_ttyname)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (Z_TYPE_P(z_fd) == IS_RESOURCE) {
-		if (!php_posix_stream_get_fd(z_fd, &fd)) {
+		if (php_posix_stream_get_fd(z_fd, &fd) == FAILURE) {
 			RETURN_FALSE;
 		}
 	} else {
@@ -524,7 +522,7 @@ PHP_FUNCTION(posix_isatty)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (Z_TYPE_P(z_fd) == IS_RESOURCE) {
-		if (!php_posix_stream_get_fd(z_fd, &fd)) {
+		if (php_posix_stream_get_fd(z_fd, &fd) == FAILURE) {
 			RETURN_FALSE;
 		}
 	} else {
@@ -537,11 +535,13 @@ PHP_FUNCTION(posix_isatty)
 
 	/* A valid file descriptor must fit in an int and be positive */
 	if (fd < 0 || fd > INT_MAX) {
+		POSIX_G(last_error) = EBADF;
 		RETURN_FALSE;
 	}
 	if (isatty(fd)) {
 		RETURN_TRUE;
 	} else {
+		POSIX_G(last_error) = errno;
 		RETURN_FALSE;
 	}
 }
@@ -635,7 +635,7 @@ PHP_FUNCTION(posix_mknod)
 			zend_argument_value_error(3, "cannot be 0 for the POSIX_S_IFCHR and POSIX_S_IFBLK modes");
 			RETURN_THROWS();
 		} else {
-#if defined(HAVE_MAKEDEV) || defined(makedev)
+#ifdef HAVE_MAKEDEV
 			php_dev = makedev(major, minor);
 #else
 			php_error_docref(NULL, E_WARNING, "Cannot create a block or character device, creating a normal file instead");
@@ -750,7 +750,7 @@ PHP_FUNCTION(posix_eaccess)
 
 	path = expand_filepath(filename, NULL);
 	if (!path) {
-		zend_argument_value_error(1, "cannot be empty");
+		zend_argument_must_not_be_empty_error(1);
 		RETURN_THROWS();
 	}
 
@@ -1047,7 +1047,7 @@ try_again:
 #define UNLIMITED_STRING "unlimited"
 
 /* {{{ posix_addlimit */
-static int posix_addlimit(int limit, const char *name, zval *return_value) {
+static zend_result posix_addlimit(int limit, const char *name, zval *return_value) {
 	int result;
 	struct rlimit rl;
 	char hard[80];
@@ -1289,7 +1289,7 @@ PHP_FUNCTION(posix_pathconf)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (path_len == 0) {
-		zend_argument_value_error(1, "cannot be empty");
+		zend_argument_must_not_be_empty_error(1);
 		RETURN_THROWS();
 	} else if (php_check_open_basedir(path)) {
 		php_error_docref(NULL, E_WARNING, "Invalid path supplied: %s", path);
@@ -1319,7 +1319,7 @@ PHP_FUNCTION(posix_fpathconf)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (Z_TYPE_P(z_fd) == IS_RESOURCE) {
-		if (!php_posix_stream_get_fd(z_fd, &fd)) {
+		if (php_posix_stream_get_fd(z_fd, &fd) == FAILURE) {
 			RETURN_FALSE;
 		}
 	} else {

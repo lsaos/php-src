@@ -868,7 +868,6 @@ optimize_const_unary_op:
 				break;
 
 			case ZEND_RETURN:
-			case ZEND_EXIT:
 				if (opline->op1_type == IS_TMP_VAR) {
 					src = VAR_SOURCE(opline->op1);
 					if (src && src->opcode == ZEND_QM_ASSIGN) {
@@ -1017,6 +1016,7 @@ static void assemble_code_blocks(zend_cfg *cfg, zend_op_array *op_array, zend_op
 			case ZEND_ASSERT_CHECK:
 			case ZEND_JMP_NULL:
 			case ZEND_BIND_INIT_STATIC_OR_JMP:
+			case ZEND_JMP_FRAMELESS:
 				ZEND_SET_OP_JMP_ADDR(opline, opline->op2, new_opcodes + blocks[b->successors[0]].start);
 				break;
 			case ZEND_CATCH:
@@ -1152,7 +1152,7 @@ static zend_always_inline zend_basic_block *get_next_block(const zend_cfg *cfg, 
 		}
 		next_block++;
 	}
-	while (next_block->len == 0 && !(next_block->flags & ZEND_BB_PROTECTED)) {
+	while (next_block->len == 0 && !(next_block->flags & (ZEND_BB_TARGET|ZEND_BB_PROTECTED))) {
 		next_block = cfg->blocks + next_block->successors[0];
 	}
 	return next_block;
@@ -1220,8 +1220,7 @@ static void zend_jmp_optimization(zend_basic_block *block, zend_op_array *op_arr
 				target = op_array->opcodes + target_block->start;
 				if ((target->opcode == ZEND_RETURN ||
 				            target->opcode == ZEND_RETURN_BY_REF ||
-				            target->opcode == ZEND_GENERATOR_RETURN ||
-				            target->opcode == ZEND_EXIT) &&
+				            target->opcode == ZEND_GENERATOR_RETURN) &&
 				           !(op_array->fn_flags & ZEND_ACC_HAS_FINALLY_BLOCK)) {
 					/* JMP L, L: RETURN to immediate RETURN */
 					*last_op = *target;

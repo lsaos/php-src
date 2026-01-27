@@ -62,16 +62,6 @@ TODO:
 #include "gdhelpers.h"
 #include "gd_intern.h"
 
-#ifndef HAVE_FLOORF
-# define HAVE_FLOORF 0
-#endif
-#if HAVE_FLOORF == 0
-# ifndef floorf
-/* float floorf(float x);*/
-#  define floorf(x) ((float)(floor(x)))
-# endif
-#endif
-
 #ifndef MIN
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #endif
